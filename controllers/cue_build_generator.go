@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/kustomize/k8sdeps/kunstruct"
 	"sigs.k8s.io/yaml"
 
-	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
 
 const (

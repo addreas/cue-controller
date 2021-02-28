@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/cli-utils/pkg/kstatus/status"
 	"sigs.k8s.io/cli-utils/pkg/object"
 
-	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
 
 type CueBuildHealthCheck struct {

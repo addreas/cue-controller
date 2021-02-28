@@ -56,7 +56,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	"sigs.k8s.io/kustomize/api/filesys"
 
-	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
 
 // +kubebuilder:rbac:groups=cuebuild.toolkit.fluxcd.io,resources=cuebuilds,verbs=get;list;watch;create;update;patch;delete

@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
 
 type CueBuildGarbageCollector struct {

@@ -64,6 +64,10 @@ spec:
                   - name
                   type: object
                 type: array
+              expression:
+                description: Expression to evaluate that should be possible to pass
+                  directly to `kubectl apply -f -`.
+                type: string
               force:
                 default: false
                 description: Force instructs the controller to recreate resources
@@ -180,7 +184,9 @@ spec:
                 - server
                 type: string
             required:
+            - expression
             - interval
+            - prune
             - sourceRef
             type: object
           status:

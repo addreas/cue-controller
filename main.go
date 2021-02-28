@@ -36,8 +36,8 @@ import (
 	"github.com/fluxcd/pkg/runtime/probes"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 
-	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
-	"github.com/fluxcd/cuebuild-controller/controllers"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
+	"github.com/addreas/cuebuild-controller/controllers"
 	// +kubebuilder:scaffold:imports
 )
 

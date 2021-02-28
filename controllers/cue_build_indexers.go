@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 	"github.com/fluxcd/pkg/runtime/dependency"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 )

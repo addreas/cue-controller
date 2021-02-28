@@ -1,4 +1,4 @@
-module github.com/fluxcd/cuebuild-controller/api
+module github.com/addreas/cuebuild-controller/api
 
 go 1.15
 

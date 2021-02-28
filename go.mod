@@ -1,12 +1,12 @@
-module github.com/fluxcd/cuebuild-controller
+module github.com/addreas/cuebuild-controller
 
 go 1.15
 
-replace github.com/fluxcd/cuebuild-controller/api => ./api
+replace github.com/addreas/cuebuild-controller/api => ./api
 
 require (
 	github.com/cyphar/filepath-securejoin v0.2.2
-	github.com/fluxcd/cuebuild-controller/api v0.0.0-00010101000000-000000000000
+	github.com/addreas/cuebuild-controller/api v0.0.0-00010101000000-000000000000
 	github.com/fluxcd/pkg/apis/meta v0.8.0
 	github.com/fluxcd/pkg/runtime v0.8.3
 	github.com/fluxcd/pkg/testserver v0.0.2
