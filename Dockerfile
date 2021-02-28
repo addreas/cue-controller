@@ -30,16 +30,16 @@ COPY controllers/ controllers/
 COPY internal/ internal/
 
 # build
-RUN CGO_ENABLED=0 go build -a -o kustomize-controller main.go
+RUN CGO_ENABLED=0 go build -a -o cuebuild-controller main.go
 
 FROM alpine:3.13
 
-LABEL org.opencontainers.image.source="https://github.com/fluxcd/kustomize-controller"
+LABEL org.opencontainers.image.source="https://github.com/addreas/cuebuild-controller"
 
 RUN apk add --no-cache ca-certificates tini git openssh-client gnupg
 
 COPY --from=builder /usr/local/bin/kubectl /usr/local/bin/
-COPY --from=builder /workspace/kustomize-controller /usr/local/bin/
+COPY --from=builder /workspace/cuebuild-controller /usr/local/bin/
 
 # Create minimal nsswitch.conf file to prioritize the usage of /etc/hosts over DNS queries.
 # https://github.com/gliderlabs/docker-alpine/issues/367#issuecomment-354316460
@@ -52,4 +52,4 @@ USER controller
 ENV GNUPGHOME=/tmp
 COPY config/kubeconfig /home/controller/.kube/config
 
-ENTRYPOINT [ "/sbin/tini", "--", "kustomize-controller" ]
+ENTRYPOINT [ "/sbin/tini", "--", "cuebuild-controller" ]

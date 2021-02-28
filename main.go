@@ -36,8 +36,8 @@ import (
 	"github.com/fluxcd/pkg/runtime/probes"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
-	"github.com/fluxcd/kustomize-controller/controllers"
+	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
+	"github.com/fluxcd/cuebuild-controller/controllers"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -50,7 +50,7 @@ func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 
 	_ = sourcev1.AddToScheme(scheme)
-	_ = kustomizev1.AddToScheme(scheme)
+	_ = cuebuildv1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -74,7 +74,7 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "enable-leader-election", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.IntVar(&concurrent, "concurrent", 4, "The number of concurrent kustomize reconciles.")
+	flag.IntVar(&concurrent, "concurrent", 4, "The number of concurrent cuebuild reconciles.")
 	flag.DurationVar(&requeueDependency, "requeue-dependency", 30*time.Second, "The interval at which failing dependencies are reevaluated.")
 	flag.BoolVar(&watchAllNamespaces, "watch-all-namespaces", true,
 		"Watch for custom resources in all namespaces, if set to false it will only watch the runtime namespace.")
@@ -89,7 +89,7 @@ func main() {
 
 	var eventRecorder *events.Recorder
 	if eventsAddr != "" {
-		if er, err := events.NewRecorder(eventsAddr, "kustomize-controller"); err != nil {
+		if er, err := events.NewRecorder(eventsAddr, "cuebuild-controller"); err != nil {
 			setupLog.Error(err, "unable to create event recorder")
 			os.Exit(1)
 		} else {
@@ -112,7 +112,7 @@ func main() {
 		HealthProbeBindAddress: healthAddr,
 		Port:                   9443,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "7593cc5d.fluxcd.io",
+		LeaderElectionID:       "cuebuild.fluxcd.io",
 		Namespace:              watchNamespace,
 		Logger:                 ctrl.Log,
 	})
@@ -124,19 +124,19 @@ func main() {
 	probes.SetupChecks(mgr, setupLog)
 	pprof.SetupHandlers(mgr, setupLog)
 
-	if err = (&controllers.KustomizationReconciler{
+	if err = (&controllers.CueBuildReconciler{
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
-		EventRecorder:         mgr.GetEventRecorderFor("kustomize-controller"),
+		EventRecorder:         mgr.GetEventRecorderFor("cuebuild-controller"),
 		ExternalEventRecorder: eventRecorder,
 		MetricsRecorder:       metricsRecorder,
 		StatusPoller:          polling.NewStatusPoller(mgr.GetClient(), mgr.GetRESTMapper()),
-	}).SetupWithManager(mgr, controllers.KustomizationReconcilerOptions{
+	}).SetupWithManager(mgr, controllers.CueBuildReconcilerOptions{
 		MaxConcurrentReconciles:   concurrent,
 		DependencyRequeueInterval: requeueDependency,
 		HTTPRetry:                 httpRetry,
 	}); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", kustomizev1.KustomizationKind)
+		setupLog.Error(err, "unable to create controller", "controller", cuebuildv1.CueBuildKind)
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

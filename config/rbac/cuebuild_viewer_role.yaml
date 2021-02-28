@@ -1,0 +1,20 @@
+# permissions for end users to view cuebuilds.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cuebuild-viewer-role
+rules:
+- apiGroups:
+  - cuebuild.toolkit.fluxcd.io
+  resources:
+  - cuebuilds
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cuebuild.toolkit.fluxcd.io
+  resources:
+  - cuebuilds/status
+  verbs:
+  - get

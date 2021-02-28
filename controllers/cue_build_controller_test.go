@@ -32,30 +32,30 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/testserver"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 )
 
-var _ = Describe("KustomizationReconciler", func() {
+var _ = Describe("CueBuildReconciler", func() {
 	const (
 		timeout                = time.Second * 30
 		interval               = time.Second * 1
 		reconciliationInterval = time.Second * 5
 	)
 
-	Context("Kustomization", func() {
+	Context("CueBuild", func() {
 		var (
 			namespace  *corev1.Namespace
-			kubeconfig *kustomizev1.KubeConfig
+			kubeconfig *cuebuildv1.KubeConfig
 			httpServer *testserver.ArtifactServer
 			err        error
 		)
 
 		BeforeEach(func() {
 			namespace = &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: "kustomization-test" + randStringRunes(5)},
+				ObjectMeta: metav1.ObjectMeta{Name: "cuebuild-test" + randStringRunes(5)},
 			}
 			err = k8sClient.Create(context.Background(), namespace)
 			Expect(err).NotTo(HaveOccurred(), "failed to create test namespace")
@@ -85,7 +85,7 @@ var _ = Describe("KustomizationReconciler", func() {
 				},
 			}
 			k8sClient.Create(context.Background(), kubeconfigSecret)
-			kubeconfig = &kustomizev1.KubeConfig{
+			kubeconfig = &cuebuildv1.KubeConfig{
 				SecretRef: meta.LocalObjectReference{
 					Name: kubeconfigSecret.Name,
 				},
@@ -110,7 +110,7 @@ var _ = Describe("KustomizationReconciler", func() {
 			expectRevision string
 		}
 
-		DescribeTable("Kustomization tests", func(t refTestCase) {
+		DescribeTable("CueBuild tests", func(t refTestCase) {
 			artifact, err := httpServer.ArtifactFromFiles(t.artifacts)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -181,17 +181,17 @@ var _ = Describe("KustomizationReconciler", func() {
 				Name:      fmt.Sprintf("%s", randStringRunes(5)),
 				Namespace: namespace.Name,
 			}
-			k := &kustomizev1.Kustomization{
+			k := &cuebuildv1.CueBuild{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      kName.Name,
 					Namespace: kName.Namespace,
 				},
-				Spec: kustomizev1.KustomizationSpec{
+				Spec: cuebuildv1.CueBuildSpec{
 					KubeConfig: kubeconfig,
 					Interval:   metav1.Duration{Duration: reconciliationInterval},
-					Path:       "./",
+					Paths:      []string{"./..."},
 					Prune:      true,
-					SourceRef: kustomizev1.CrossNamespaceSourceReference{
+					SourceRef: cuebuildv1.CrossNamespaceSourceReference{
 						Kind: sourcev1.GitRepositoryKind,
 						Name: repository.Name,
 					},
@@ -199,19 +199,6 @@ var _ = Describe("KustomizationReconciler", func() {
 					Timeout:    nil,
 					Validation: "client",
 					Force:      false,
-					PostBuild: &kustomizev1.PostBuild{
-						Substitute: map[string]string{"_Region": "eu-central-1"},
-						SubstituteFrom: []kustomizev1.SubstituteReference{
-							{
-								Kind: "ConfigMap",
-								Name: configName.Name,
-							},
-							{
-								Kind: "Secret",
-								Name: secretName.Name,
-							},
-						},
-					},
 					HealthChecks: []meta.NamespacedObjectKindReference{
 						{
 							APIVersion: "v1",
@@ -225,7 +212,7 @@ var _ = Describe("KustomizationReconciler", func() {
 			Expect(k8sClient.Create(context.Background(), k)).Should(Succeed())
 			defer k8sClient.Delete(context.Background(), k)
 
-			got := &kustomizev1.Kustomization{}
+			got := &cuebuildv1.CueBuild{}
 			var readyCondition metav1.Condition
 			Eventually(func() bool {
 				_ = k8sClient.Get(context.Background(), kName, got)
@@ -240,12 +227,12 @@ var _ = Describe("KustomizationReconciler", func() {
 
 			Expect(readyCondition.Status).To(Equal(t.expectStatus))
 			Expect(got.Status.LastAppliedRevision).To(Equal(t.expectRevision))
-			Expect(apimeta.IsStatusConditionTrue(got.Status.Conditions, kustomizev1.HealthyCondition)).To(BeTrue())
+			Expect(apimeta.IsStatusConditionTrue(got.Status.Conditions, cuebuildv1.HealthyCondition)).To(BeTrue())
 
 			ns := &corev1.Namespace{}
 			Expect(k8sClient.Get(context.Background(), types.NamespacedName{Name: "test"}, ns)).Should(Succeed())
-			Expect(ns.Labels[fmt.Sprintf("%s/name", kustomizev1.GroupVersion.Group)]).To(Equal(kName.Name))
-			Expect(ns.Labels[fmt.Sprintf("%s/namespace", kustomizev1.GroupVersion.Group)]).To(Equal(kName.Namespace))
+			Expect(ns.Labels[fmt.Sprintf("%s/name", cuebuildv1.GroupVersion.Group)]).To(Equal(kName.Name))
+			Expect(ns.Labels[fmt.Sprintf("%s/namespace", cuebuildv1.GroupVersion.Group)]).To(Equal(kName.Namespace))
 
 			sa := &corev1.ServiceAccount{}
 			Expect(k8sClient.Get(context.Background(), types.NamespacedName{Name: "test", Namespace: "test"}, sa)).Should(Succeed())
@@ -285,7 +272,7 @@ metadata:
 			}),
 		)
 
-		Describe("Kustomization resource replacement", func() {
+		Describe("CueBuild resource replacement", func() {
 			deploymentManifest := func(namespace, selector string) string {
 				return fmt.Sprintf(`---
 apiVersion: apps/v1
@@ -360,17 +347,17 @@ spec:
 					Name:      fmt.Sprintf("%s", randStringRunes(5)),
 					Namespace: namespace.Name,
 				}
-				k := &kustomizev1.Kustomization{
+				k := &cuebuildv1.CueBuild{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      kName.Name,
 						Namespace: kName.Namespace,
 					},
-					Spec: kustomizev1.KustomizationSpec{
+					Spec: cuebuildv1.CueBuildSpec{
 						KubeConfig: kubeconfig,
 						Interval:   metav1.Duration{Duration: reconciliationInterval},
-						Path:       "./",
+						Paths:      []string{"./..."},
 						Prune:      true,
-						SourceRef: kustomizev1.CrossNamespaceSourceReference{
+						SourceRef: cuebuildv1.CrossNamespaceSourceReference{
 							Kind: sourcev1.GitRepositoryKind,
 							Name: repository.Name,
 						},
@@ -383,7 +370,7 @@ spec:
 				Expect(k8sClient.Create(context.Background(), k)).To(Succeed())
 				defer k8sClient.Delete(context.Background(), k)
 
-				got := &kustomizev1.Kustomization{}
+				got := &cuebuildv1.CueBuild{}
 				Eventually(func() bool {
 					_ = k8sClient.Get(context.Background(), kName, got)
 					c := apimeta.FindStatusCondition(got.Status.Conditions, meta.ReadyCondition)

@@ -1,11 +1,12 @@
-# kustomize-controller
+# cuebuild-controller
+# TODO
 
 [![e2e](https://github.com/fluxcd/kustomize-controller/workflows/e2e/badge.svg)](https://github.com/fluxcd/kustomize-controller/actions)
 [![report](https://goreportcard.com/badge/github.com/fluxcd/kustomize-controller)](https://goreportcard.com/report/github.com/fluxcd/kustomize-controller)
 [![license](https://img.shields.io/github/license/fluxcd/kustomize-controller.svg)](https://github.com/fluxcd/kustomize-controller/blob/main/LICENSE)
 [![release](https://img.shields.io/github/release/fluxcd/kustomize-controller/all.svg)](https://github.com/fluxcd/kustomize-controller/releases)
 
-The kustomize-controller is a Kubernetes operator, specialized in running 
+The kustomize-controller is a Kubernetes operator, specialized in running
 continuous delivery pipelines for infrastructure and workloads
 defined with Kubernetes manifests and assembled with Kustomize.
 
@@ -13,8 +14,8 @@ defined with Kubernetes manifests and assembled with Kustomize.
 
 Features:
 * watches for `Kustomization` objects
-* fetches artifacts produced by [source-controller](https://github.com/fluxcd/source-controller) from `Source` objects 
-* watches `Source` objects for revision changes 
+* fetches artifacts produced by [source-controller](https://github.com/fluxcd/source-controller) from `Source` objects
+* watches `Source` objects for revision changes
 * generates the `kustomization.yaml` file if needed
 * generates Kubernetes manifests with kustomize build
 * decrypts Kubernetes secrets with Mozilla SOPS
@@ -22,7 +23,7 @@ Features:
 * applies the generated manifests on the cluster
 * prunes the Kubernetes objects removed from source
 * checks the health of the deployed workloads
-* runs `Kustomizations` in a specific order, taking into account the depends-on relationship 
+* runs `Kustomizations` in a specific order, taking into account the depends-on relationship
 * notifies whenever a `Kustomization` status changes
 
 Specifications:
@@ -115,11 +116,11 @@ spec:
 > a kustomization.yaml file inside the specified path.
 
 A detailed explanation of the Kustomization object and its fields
-can be found in the [specification doc](docs/spec/v1beta1/README.md). 
+can be found in the [specification doc](docs/spec/v1beta1/README.md).
 
 Based on the above definition, the kustomize-controller fetches the Git repository content from source-controller,
 generates Kubernetes manifests by running kustomize build inside `./deploy/overlays/dev/`,
-and validates them with a dry-run apply. If the manifests pass validation, the controller will apply them 
+and validates them with a dry-run apply. If the manifests pass validation, the controller will apply them
 on the cluster and starts the health assessment of the deployed workload. If the health checks are passing, the
 Kustomization object status transitions to a ready state.
 
@@ -176,7 +177,7 @@ status:
     reason: ReconciliationFailed
     status: "False"
     type: Ready
-``` 
+```
 
 ```json
 {
@@ -187,7 +188,7 @@ status:
 
 ### Control the execution order
 
-When running a kustomization, you may need to make sure other kustomizations have been 
+When running a kustomization, you may need to make sure other kustomizations have been
 successfully applied beforehand. A kustomization can specify a list of dependencies with `spec.dependsOn`.
 When combined with health assessment, a kustomization will run after all its dependencies health checks are passing.
 
@@ -305,7 +306,7 @@ metadata:
   name: on-call
   namespace: flux-system
 spec:
-  providerRef: 
+  providerRef:
     name: slack
   eventSeverity: info
   eventSources:

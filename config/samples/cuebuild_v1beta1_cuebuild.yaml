@@ -1,10 +1,10 @@
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
-kind: Kustomization
+apiVersion: cuebuild.toolkit.fluxcd.io/v1beta1
+kind: CueBuild
 metadata:
   name: webapp-dev
 spec:
   interval: 5m
-  path: "./deploy/webapp/"
+  path: "./deploy/..."
   prune: true
   sourceRef:
     kind: GitRepository
@@ -19,8 +19,8 @@ spec:
       namespace: webapp
   timeout: 2m
 ---
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
-kind: Kustomization
+apiVersion: cuebuild.toolkit.fluxcd.io/v1beta1
+kind: CueBuild
 metadata:
   name: webapp-production
 spec:

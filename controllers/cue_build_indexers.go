@@ -23,12 +23,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
 	"github.com/fluxcd/pkg/runtime/dependency"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 )
 
-func (r *KustomizationReconciler) requestsForGitRepositoryRevisionChange(obj client.Object) []reconcile.Request {
+func (r *CueBuildReconciler) requestsForGitRepositoryRevisionChange(obj client.Object) []reconcile.Request {
 	repo, ok := obj.(*sourcev1.GitRepository)
 	if !ok {
 		panic(fmt.Sprintf("Expected a GitRepository but got a %T", obj))
@@ -39,16 +39,16 @@ func (r *KustomizationReconciler) requestsForGitRepositoryRevisionChange(obj cli
 	}
 
 	ctx := context.Background()
-	var list kustomizev1.KustomizationList
+	var list cuebuildv1.CueBuildList
 	if err := r.List(ctx, &list, client.MatchingFields{
-		kustomizev1.GitRepositoryIndexKey: ObjectKey(obj).String(),
+		cuebuildv1.GitRepositoryIndexKey: ObjectKey(obj).String(),
 	}); err != nil {
 		return nil
 	}
 	var dd []dependency.Dependent
 	for _, d := range list.Items {
 		// If the revision of the artifact equals to the last attempted revision,
-		// we should not make a request for this Kustomization
+		// we should not make a request for this CueBuild
 		if repo.GetArtifact().Revision == d.Status.LastAttemptedRevision {
 			continue
 		}
@@ -66,10 +66,10 @@ func (r *KustomizationReconciler) requestsForGitRepositoryRevisionChange(obj cli
 	return reqs
 }
 
-func (r *KustomizationReconciler) indexByGitRepository(o client.Object) []string {
-	k, ok := o.(*kustomizev1.Kustomization)
+func (r *CueBuildReconciler) indexByGitRepository(o client.Object) []string {
+	k, ok := o.(*cuebuildv1.CueBuild)
 	if !ok {
-		panic(fmt.Sprintf("Expected a Kustomization, got %T", o))
+		panic(fmt.Sprintf("Expected a CueBuild, got %T", o))
 	}
 
 	if k.Spec.SourceRef.Kind == sourcev1.GitRepositoryKind {
@@ -83,7 +83,7 @@ func (r *KustomizationReconciler) indexByGitRepository(o client.Object) []string
 	return nil
 }
 
-func (r *KustomizationReconciler) requestsForBucketRevisionChange(obj client.Object) []reconcile.Request {
+func (r *CueBuildReconciler) requestsForBucketRevisionChange(obj client.Object) []reconcile.Request {
 	bucket, ok := obj.(*sourcev1.Bucket)
 	if !ok {
 		panic(fmt.Sprintf("Expected a Bucket but got a %T", obj))
@@ -94,16 +94,16 @@ func (r *KustomizationReconciler) requestsForBucketRevisionChange(obj client.Obj
 	}
 
 	ctx := context.Background()
-	var list kustomizev1.KustomizationList
+	var list cuebuildv1.CueBuildList
 	if err := r.List(ctx, &list, client.MatchingFields{
-		kustomizev1.BucketIndexKey: ObjectKey(obj).String(),
+		cuebuildv1.BucketIndexKey: ObjectKey(obj).String(),
 	}); err != nil {
 		return nil
 	}
 	var dd []dependency.Dependent
 	for _, d := range list.Items {
 		// If the revision of the artifact equals to the last attempted revision,
-		// we should not make a request for this Kustomization
+		// we should not make a request for this CueBuild
 		if bucket.GetArtifact().Revision == d.Status.LastAttemptedRevision {
 			continue
 		}
@@ -121,10 +121,10 @@ func (r *KustomizationReconciler) requestsForBucketRevisionChange(obj client.Obj
 	return reqs
 }
 
-func (r *KustomizationReconciler) indexByBucket(o client.Object) []string {
-	k, ok := o.(*kustomizev1.Kustomization)
+func (r *CueBuildReconciler) indexByBucket(o client.Object) []string {
+	k, ok := o.(*cuebuildv1.CueBuild)
 	if !ok {
-		panic(fmt.Sprintf("Expected a Kustomization, got %T", o))
+		panic(fmt.Sprintf("Expected a CueBuild, got %T", o))
 	}
 
 	if k.Spec.SourceRef.Kind == sourcev1.BucketKind {

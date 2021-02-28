@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1beta1 contains API Schema definitions for the kustomize v1beta1 API group
+// Package v1alpha1 contains API Schema definitions for the cuebuild v1alpha1 API group
 // +kubebuilder:object:generate=true
-// +groupName=kustomize.toolkit.fluxcd.io
-package v1beta1
+// +groupName=cuebuild.toolkit.fluxcd.io
+package v1alpha1

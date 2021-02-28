@@ -1,13 +1,13 @@
-# permissions for end users to edit kustomizations.
+# permissions for end users to edit cuebuilds.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: kustomization-editor-role
 rules:
 - apiGroups:
-  - kustomize.toolkit.fluxcd.io
+  - cuebuild.toolkit.fluxcd.io
   resources:
-  - kustomizations
+  - cuebuilds
   verbs:
   - create
   - delete
@@ -17,8 +17,8 @@ rules:
   - update
   - watch
 - apiGroups:
-  - kustomize.toolkit.fluxcd.io
+  - cuebuild.toolkit.fluxcd.io
   resources:
-  - kustomizations/status
+  - cuebuilds/status
   verbs:
   - get

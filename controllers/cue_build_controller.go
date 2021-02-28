@@ -56,19 +56,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 	"sigs.k8s.io/kustomize/api/filesys"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/fluxcd/cuebuild-controller/api/v1alpha1"
 )
 
-// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations/finalizers,verbs=get;create;update;patch;delete
+// +kubebuilder:rbac:groups=cuebuild.toolkit.fluxcd.io,resources=cuebuilds,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cuebuild.toolkit.fluxcd.io,resources=cuebuilds/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cuebuild.toolkit.fluxcd.io,resources=cuebuilds/finalizers,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=buckets;gitrepositories,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=buckets/status;gitrepositories/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=secrets;serviceaccounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// KustomizationReconciler reconciles a Kustomization object
-type KustomizationReconciler struct {
+// CueBuildReconciler reconciles a CueBuild object
+type CueBuildReconciler struct {
 	client.Client
 	httpClient            *retryablehttp.Client
 	requeueDependency     time.Duration
@@ -79,21 +79,21 @@ type KustomizationReconciler struct {
 	StatusPoller          *polling.StatusPoller
 }
 
-type KustomizationReconcilerOptions struct {
+type CueBuildReconcilerOptions struct {
 	MaxConcurrentReconciles   int
 	HTTPRetry                 int
 	DependencyRequeueInterval time.Duration
 }
 
-func (r *KustomizationReconciler) SetupWithManager(mgr ctrl.Manager, opts KustomizationReconcilerOptions) error {
-	// Index the Kustomizations by the GitRepository references they (may) point at.
-	if err := mgr.GetCache().IndexField(context.TODO(), &kustomizev1.Kustomization{}, kustomizev1.GitRepositoryIndexKey,
+func (r *CueBuildReconciler) SetupWithManager(mgr ctrl.Manager, opts CueBuildReconcilerOptions) error {
+	// Index the Cuebuilds by the GitRepository references they (may) point at.
+	if err := mgr.GetCache().IndexField(context.TODO(), &cuebuildv1.CueBuild{}, cuebuildv1.GitRepositoryIndexKey,
 		r.indexByGitRepository); err != nil {
 		return fmt.Errorf("failed setting index fields: %w", err)
 	}
 
-	// Index the Kustomizations by the Bucket references they (may) point at.
-	if err := mgr.GetCache().IndexField(context.TODO(), &kustomizev1.Kustomization{}, kustomizev1.BucketIndexKey,
+	// Index the Cuebuilds by the Bucket references they (may) point at.
+	if err := mgr.GetCache().IndexField(context.TODO(), &cuebuildv1.CueBuild{}, cuebuildv1.BucketIndexKey,
 		r.indexByBucket); err != nil {
 		return fmt.Errorf("failed setting index fields: %w", err)
 	}
@@ -110,7 +110,7 @@ func (r *KustomizationReconciler) SetupWithManager(mgr ctrl.Manager, opts Kustom
 	r.httpClient = httpClient
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&kustomizev1.Kustomization{}, builder.WithPredicates(
+		For(&cuebuildv1.CueBuild{}, builder.WithPredicates(
 			predicate.Or(predicate.GenerationChangedPredicate{}, predicates.ReconcileRequestedPredicate{}),
 		)).
 		Watches(
@@ -127,49 +127,49 @@ func (r *KustomizationReconciler) SetupWithManager(mgr ctrl.Manager, opts Kustom
 		Complete(r)
 }
 
-func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *CueBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logr.FromContext(ctx)
 	reconcileStart := time.Now()
 
-	var kustomization kustomizev1.Kustomization
-	if err := r.Get(ctx, req.NamespacedName, &kustomization); err != nil {
+	var cueBuild cuebuildv1.CueBuild
+	if err := r.Get(ctx, req.NamespacedName, &cueBuild); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Add our finalizer if it does not exist
-	if !controllerutil.ContainsFinalizer(&kustomization, kustomizev1.KustomizationFinalizer) {
-		controllerutil.AddFinalizer(&kustomization, kustomizev1.KustomizationFinalizer)
-		if err := r.Update(ctx, &kustomization); err != nil {
+	if !controllerutil.ContainsFinalizer(&cueBuild, cuebuildv1.CueBuildFinalizer) {
+		controllerutil.AddFinalizer(&cueBuild, cuebuildv1.CueBuildFinalizer)
+		if err := r.Update(ctx, &cueBuild); err != nil {
 			log.Error(err, "unable to register finalizer")
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Examine if the object is under deletion
-	if !kustomization.ObjectMeta.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, kustomization)
+	if !cueBuild.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, cueBuild)
 	}
 
-	// Return early if the Kustomization is suspended.
-	if kustomization.Spec.Suspend {
+	// Return early if the CueBuild is suspended.
+	if cueBuild.Spec.Suspend {
 		log.Info("Reconciliation is suspended for this object")
 		return ctrl.Result{}, nil
 	}
 
 	// resolve source reference
-	source, err := r.getSource(ctx, kustomization)
+	source, err := r.getSource(ctx, cueBuild)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			msg := fmt.Sprintf("Source '%s' not found", kustomization.Spec.SourceRef.String())
-			kustomization = kustomizev1.KustomizationNotReady(kustomization, "", kustomizev1.ArtifactFailedReason, msg)
-			if err := r.patchStatus(ctx, req, kustomization.Status); err != nil {
+			msg := fmt.Sprintf("Source '%s' not found", cueBuild.Spec.SourceRef.String())
+			cueBuild = cuebuildv1.CueBuildNotReady(cueBuild, "", cuebuildv1.ArtifactFailedReason, msg)
+			if err := r.patchStatus(ctx, req, cueBuild.Status); err != nil {
 				log.Error(err, "unable to update status for source not found")
 				return ctrl.Result{Requeue: true}, err
 			}
-			r.recordReadiness(ctx, kustomization)
+			r.recordReadiness(ctx, cueBuild)
 			log.Info(msg)
 			// do not requeue immediately, when the source is created the watcher should trigger a reconciliation
-			return ctrl.Result{RequeueAfter: kustomization.GetRetryInterval()}, nil
+			return ctrl.Result{RequeueAfter: cueBuild.GetRetryInterval()}, nil
 		} else {
 			// retry on transient errors
 			return ctrl.Result{Requeue: true}, err
@@ -178,23 +178,23 @@ func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if source.GetArtifact() == nil {
 		msg := "Source is not ready, artifact not found"
-		kustomization = kustomizev1.KustomizationNotReady(kustomization, "", kustomizev1.ArtifactFailedReason, msg)
-		if err := r.patchStatus(ctx, req, kustomization.Status); err != nil {
+		cueBuild = cuebuildv1.CueBuildNotReady(cueBuild, "", cuebuildv1.ArtifactFailedReason, msg)
+		if err := r.patchStatus(ctx, req, cueBuild.Status); err != nil {
 			log.Error(err, "unable to update status for artifact not found")
 			return ctrl.Result{Requeue: true}, err
 		}
-		r.recordReadiness(ctx, kustomization)
+		r.recordReadiness(ctx, cueBuild)
 		log.Info(msg)
 		// do not requeue immediately, when the artifact is created the watcher should trigger a reconciliation
-		return ctrl.Result{RequeueAfter: kustomization.GetRetryInterval()}, nil
+		return ctrl.Result{RequeueAfter: cueBuild.GetRetryInterval()}, nil
 	}
 
 	// check dependencies
-	if len(kustomization.Spec.DependsOn) > 0 {
-		if err := r.checkDependencies(kustomization); err != nil {
-			kustomization = kustomizev1.KustomizationNotReady(
-				kustomization, source.GetArtifact().Revision, meta.DependencyNotReadyReason, err.Error())
-			if err := r.patchStatus(ctx, req, kustomization.Status); err != nil {
+	if len(cueBuild.Spec.DependsOn) > 0 {
+		if err := r.checkDependencies(cueBuild); err != nil {
+			cueBuild = cuebuildv1.CueBuildNotReady(
+				cueBuild, source.GetArtifact().Revision, meta.DependencyNotReadyReason, err.Error())
+			if err := r.patchStatus(ctx, req, cueBuild.Status); err != nil {
 				log.Error(err, "unable to update status for dependency not ready")
 				return ctrl.Result{Requeue: true}, err
 			}
@@ -202,8 +202,8 @@ func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			// instead we requeue on a fix interval.
 			msg := fmt.Sprintf("Dependencies do not meet ready condition, retrying in %s", r.requeueDependency.String())
 			log.Error(err, msg)
-			r.event(ctx, kustomization, source.GetArtifact().Revision, events.EventSeverityInfo, msg, nil)
-			r.recordReadiness(ctx, kustomization)
+			r.event(ctx, cueBuild, source.GetArtifact().Revision, events.EventSeverityInfo, msg, nil)
+			r.recordReadiness(ctx, cueBuild)
 			return ctrl.Result{RequeueAfter: r.requeueDependency}, nil
 		}
 		log.Info("All dependencies area ready, proceeding with reconciliation")
@@ -211,7 +211,7 @@ func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	// record reconciliation duration
 	if r.MetricsRecorder != nil {
-		objRef, err := reference.GetReference(r.Scheme, &kustomization)
+		objRef, err := reference.GetReference(r.Scheme, &cueBuild)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -219,60 +219,60 @@ func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// set the reconciliation status to progressing
-	kustomization = kustomizev1.KustomizationProgressing(kustomization)
-	if err := r.patchStatus(ctx, req, kustomization.Status); err != nil {
+	cueBuild = cuebuildv1.CueBuildProgressing(cueBuild)
+	if err := r.patchStatus(ctx, req, cueBuild.Status); err != nil {
 		(logr.FromContext(ctx)).Error(err, "unable to update status to progressing")
 		return ctrl.Result{Requeue: true}, err
 	}
-	r.recordReadiness(ctx, kustomization)
+	r.recordReadiness(ctx, cueBuild)
 
-	// reconcile kustomization by applying the latest revision
-	reconciledKustomization, reconcileErr := r.reconcile(ctx, *kustomization.DeepCopy(), source)
-	if err := r.patchStatus(ctx, req, reconciledKustomization.Status); err != nil {
+	// reconcile cueBuild by applying the latest revision
+	reconciledCueBuild, reconcileErr := r.reconcile(ctx, *cueBuild.DeepCopy(), source)
+	if err := r.patchStatus(ctx, req, reconciledCueBuild.Status); err != nil {
 		log.Error(err, "unable to update status after reconciliation")
 		return ctrl.Result{Requeue: true}, err
 	}
-	r.recordReadiness(ctx, reconciledKustomization)
+	r.recordReadiness(ctx, reconciledCueBuild)
 
 	// broadcast the reconciliation failure and requeue at the specified retry interval
 	if reconcileErr != nil {
 		log.Error(reconcileErr, fmt.Sprintf("Reconciliation failed after %s, next try in %s",
 			time.Now().Sub(reconcileStart).String(),
-			kustomization.GetRetryInterval().String()),
+			cueBuild.GetRetryInterval().String()),
 			"revision",
 			source.GetArtifact().Revision)
-		r.event(ctx, reconciledKustomization, source.GetArtifact().Revision, events.EventSeverityError,
+		r.event(ctx, reconciledCueBuild, source.GetArtifact().Revision, events.EventSeverityError,
 			reconcileErr.Error(), nil)
-		return ctrl.Result{RequeueAfter: kustomization.GetRetryInterval()}, nil
+		return ctrl.Result{RequeueAfter: cueBuild.GetRetryInterval()}, nil
 	}
 
 	// broadcast the reconciliation result and requeue at the specified interval
 	log.Info(fmt.Sprintf("Reconciliation finished in %s, next run in %s",
 		time.Now().Sub(reconcileStart).String(),
-		kustomization.Spec.Interval.Duration.String()),
+		cueBuild.Spec.Interval.Duration.String()),
 		"revision",
 		source.GetArtifact().Revision,
 	)
-	r.event(ctx, reconciledKustomization, source.GetArtifact().Revision, events.EventSeverityInfo,
+	r.event(ctx, reconciledCueBuild, source.GetArtifact().Revision, events.EventSeverityInfo,
 		"Update completed", map[string]string{"commit_status": "update"})
-	return ctrl.Result{RequeueAfter: kustomization.Spec.Interval.Duration}, nil
+	return ctrl.Result{RequeueAfter: cueBuild.Spec.Interval.Duration}, nil
 }
 
-func (r *KustomizationReconciler) reconcile(
+func (r *CueBuildReconciler) reconcile(
 	ctx context.Context,
-	kustomization kustomizev1.Kustomization,
-	source sourcev1.Source) (kustomizev1.Kustomization, error) {
+	cueBuild cuebuildv1.CueBuild,
+	source sourcev1.Source) (cuebuildv1.CueBuild, error) {
 	// record the value of the reconciliation request, if any
-	if v, ok := meta.ReconcileAnnotationValue(kustomization.GetAnnotations()); ok {
-		kustomization.Status.SetLastHandledReconcileRequest(v)
+	if v, ok := meta.ReconcileAnnotationValue(cueBuild.GetAnnotations()); ok {
+		cueBuild.Status.SetLastHandledReconcileRequest(v)
 	}
 
 	// create tmp dir
-	tmpDir, err := ioutil.TempDir("", kustomization.Name)
+	tmpDir, err := ioutil.TempDir("", cueBuild.Name)
 	if err != nil {
 		err = fmt.Errorf("tmp dir error: %w", err)
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
 			sourcev1.StorageOperationFailedReason,
 			err.Error(),
@@ -283,84 +283,84 @@ func (r *KustomizationReconciler) reconcile(
 	// download artifact and extract files
 	err = r.download(source.GetArtifact().URL, tmpDir)
 	if err != nil {
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
-			kustomizev1.ArtifactFailedReason,
+			cuebuildv1.ArtifactFailedReason,
 			err.Error(),
 		), err
 	}
 
 	// check build path exists
-	dirPath, err := securejoin.SecureJoin(tmpDir, kustomization.Spec.Path)
+	dirPath, err := securejoin.SecureJoin(tmpDir, cueBuild.Spec.Paths[0])
 	if err != nil {
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
-			kustomizev1.ArtifactFailedReason,
+			cuebuildv1.ArtifactFailedReason,
 			err.Error(),
 		), err
 	}
 	if _, err := os.Stat(dirPath); err != nil {
-		err = fmt.Errorf("kustomization path not found: %w", err)
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		err = fmt.Errorf("cueBuild path not found: %w", err)
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
-			kustomizev1.ArtifactFailedReason,
+			cuebuildv1.ArtifactFailedReason,
 			err.Error(),
 		), err
 	}
 
 	// create any necessary kube-clients for impersonation
-	impersonation := NewKustomizeImpersonation(kustomization, r.Client, r.StatusPoller, dirPath)
+	impersonation := NewCueBuildImpersonation(cueBuild, r.Client, r.StatusPoller, dirPath)
 	kubeClient, statusPoller, err := impersonation.GetClient(ctx)
 	if err != nil {
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
 			meta.ReconciliationFailedReason,
 			err.Error(),
 		), fmt.Errorf("failed to build kube client: %w", err)
 	}
 
-	// generate kustomization.yaml and calculate the manifests checksum
-	checksum, err := r.generate(ctx, kubeClient, kustomization, dirPath)
+	// generate cueBuild.yaml and calculate the manifests checksum
+	checksum, err := r.generate(ctx, kubeClient, cueBuild, dirPath)
 	if err != nil {
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
-			kustomizev1.BuildFailedReason,
+			cuebuildv1.BuildFailedReason,
 			err.Error(),
 		), err
 	}
 
-	// build the kustomization and generate the GC snapshot
-	snapshot, err := r.build(ctx, kustomization, checksum, dirPath)
+	// build the cueBuild and generate the GC snapshot
+	snapshot, err := r.build(ctx, cueBuild, checksum, dirPath)
 	if err != nil {
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
-			kustomizev1.BuildFailedReason,
+			cuebuildv1.BuildFailedReason,
 			err.Error(),
 		), err
 	}
 
 	// dry-run apply
-	err = r.validate(ctx, kustomization, impersonation, dirPath)
+	err = r.validate(ctx, cueBuild, impersonation, dirPath)
 	if err != nil {
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
-			kustomizev1.ValidationFailedReason,
+			cuebuildv1.ValidationFailedReason,
 			err.Error(),
 		), err
 	}
 
 	// apply
-	changeSet, err := r.applyWithRetry(ctx, kustomization, impersonation, source.GetArtifact().Revision, dirPath, 5*time.Second)
+	changeSet, err := r.applyWithRetry(ctx, cueBuild, impersonation, source.GetArtifact().Revision, dirPath, 5*time.Second)
 	if err != nil {
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
 			meta.ReconciliationFailedReason,
 			err.Error(),
@@ -368,30 +368,30 @@ func (r *KustomizationReconciler) reconcile(
 	}
 
 	// prune
-	err = r.prune(ctx, kubeClient, kustomization, checksum)
+	err = r.prune(ctx, kubeClient, cueBuild, checksum)
 	if err != nil {
-		return kustomizev1.KustomizationNotReady(
-			kustomization,
+		return cuebuildv1.CueBuildNotReady(
+			cueBuild,
 			source.GetArtifact().Revision,
-			kustomizev1.PruneFailedReason,
+			cuebuildv1.PruneFailedReason,
 			err.Error(),
 		), err
 	}
 
 	// health assessment
-	err = r.checkHealth(ctx, statusPoller, kustomization, source.GetArtifact().Revision, changeSet != "")
+	err = r.checkHealth(ctx, statusPoller, cueBuild, source.GetArtifact().Revision, changeSet != "")
 	if err != nil {
-		return kustomizev1.KustomizationNotReadySnapshot(
-			kustomization,
+		return cuebuildv1.CueBuildNotReadySnapshot(
+			cueBuild,
 			snapshot,
 			source.GetArtifact().Revision,
-			kustomizev1.HealthCheckFailedReason,
+			cuebuildv1.HealthCheckFailedReason,
 			err.Error(),
 		), err
 	}
 
-	return kustomizev1.KustomizationReady(
-		kustomization,
+	return cuebuildv1.CueBuildReady(
+		cueBuild,
 		snapshot,
 		source.GetArtifact().Revision,
 		meta.ReconciliationSucceededReason,
@@ -399,13 +399,13 @@ func (r *KustomizationReconciler) reconcile(
 	), nil
 }
 
-func (r *KustomizationReconciler) checkDependencies(kustomization kustomizev1.Kustomization) error {
-	for _, d := range kustomization.Spec.DependsOn {
+func (r *CueBuildReconciler) checkDependencies(cueBuild cuebuildv1.CueBuild) error {
+	for _, d := range cueBuild.Spec.DependsOn {
 		if d.Namespace == "" {
-			d.Namespace = kustomization.GetNamespace()
+			d.Namespace = cueBuild.GetNamespace()
 		}
 		dName := types.NamespacedName(d)
-		var k kustomizev1.Kustomization
+		var k cuebuildv1.CueBuild
 		err := r.Get(context.Background(), dName, &k)
 		if err != nil {
 			return fmt.Errorf("unable to get '%s' dependency: %w", dName, err)
@@ -457,17 +457,17 @@ func (r *KustomizationReconciler) download(artifactURL string, tmpDir string) er
 	return nil
 }
 
-func (r *KustomizationReconciler) getSource(ctx context.Context, kustomization kustomizev1.Kustomization) (sourcev1.Source, error) {
+func (r *CueBuildReconciler) getSource(ctx context.Context, cueBuild cuebuildv1.CueBuild) (sourcev1.Source, error) {
 	var source sourcev1.Source
-	sourceNamespace := kustomization.GetNamespace()
-	if kustomization.Spec.SourceRef.Namespace != "" {
-		sourceNamespace = kustomization.Spec.SourceRef.Namespace
+	sourceNamespace := cueBuild.GetNamespace()
+	if cueBuild.Spec.SourceRef.Namespace != "" {
+		sourceNamespace = cueBuild.Spec.SourceRef.Namespace
 	}
 	namespacedName := types.NamespacedName{
 		Namespace: sourceNamespace,
-		Name:      kustomization.Spec.SourceRef.Name,
+		Name:      cueBuild.Spec.SourceRef.Name,
 	}
-	switch kustomization.Spec.SourceRef.Kind {
+	switch cueBuild.Spec.SourceRef.Kind {
 	case sourcev1.GitRepositoryKind:
 		var repository sourcev1.GitRepository
 		err := r.Client.Get(ctx, namespacedName, &repository)
@@ -490,103 +490,60 @@ func (r *KustomizationReconciler) getSource(ctx context.Context, kustomization k
 		source = &bucket
 	default:
 		return source, fmt.Errorf("source `%s` kind '%s' not supported",
-			kustomization.Spec.SourceRef.Name, kustomization.Spec.SourceRef.Kind)
+			cueBuild.Spec.SourceRef.Name, cueBuild.Spec.SourceRef.Kind)
 	}
 	return source, nil
 }
 
-func (r *KustomizationReconciler) generate(ctx context.Context, kubeClient client.Client, kustomization kustomizev1.Kustomization, dirPath string) (string, error) {
-	gen := NewGenerator(kustomization, kubeClient)
+func (r *CueBuildReconciler) generate(ctx context.Context, kubeClient client.Client, cueBuild cuebuildv1.CueBuild, dirPath string) (string, error) {
+	gen := NewGenerator(cueBuild, kubeClient)
 	return gen.WriteFile(ctx, dirPath)
 }
 
-func (r *KustomizationReconciler) build(ctx context.Context, kustomization kustomizev1.Kustomization, checksum, dirPath string) (*kustomizev1.Snapshot, error) {
-	timeout := kustomization.GetTimeout()
+func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueBuild, checksum, dirPath string) (*cuebuildv1.Snapshot, error) {
+	timeout := cueBuild.GetTimeout()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	dec, cleanup, err := NewTempDecryptor(r.Client, kustomization)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	// import OpenPGP keys if any
-	if err := dec.ImportKeys(ctx); err != nil {
-		return nil, err
-	}
-
 	fs := filesys.MakeFsOnDisk()
-	m, err := buildKustomization(fs, dirPath)
+	m, err := buildCueBuild(fs, dirPath)
 	if err != nil {
-		return nil, fmt.Errorf("kustomize build failed: %w", err)
-	}
-
-	for _, res := range m.Resources() {
-		// check if resources are encrypted and decrypt them before generating the final YAML
-		if kustomization.Spec.Decryption != nil {
-			outRes, err := dec.Decrypt(res)
-			if err != nil {
-				return nil, fmt.Errorf("decryption failed for '%s': %w", res.GetName(), err)
-			}
-
-			if outRes != nil {
-				_, err = m.Replace(res)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
-
-		// run variable substitutions
-		if kustomization.Spec.PostBuild != nil {
-			outRes, err := substituteVariables(ctx, r.Client, kustomization, res)
-			if err != nil {
-				return nil, fmt.Errorf("var substitution failed for '%s': %w", res.GetName(), err)
-			}
-
-			if outRes != nil {
-				_, err = m.Replace(res)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
+		return nil, fmt.Errorf("cuebuild build failed: %w", err)
 	}
 
 	resources, err := m.AsYaml()
 	if err != nil {
-		return nil, fmt.Errorf("kustomize build failed: %w", err)
+		return nil, fmt.Errorf("cuebuild build failed: %w", err)
 	}
 
-	manifestsFile := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", kustomization.GetUID()))
+	manifestsFile := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", cueBuild.GetUID()))
 	if err := fs.WriteFile(manifestsFile, resources); err != nil {
 		return nil, err
 	}
 
-	return kustomizev1.NewSnapshot(resources, checksum)
+	return cuebuildv1.NewSnapshot(resources, checksum)
 }
 
-func (r *KustomizationReconciler) validate(ctx context.Context, kustomization kustomizev1.Kustomization, imp *KustomizeImpersonation, dirPath string) error {
-	if kustomization.Spec.Validation == "" || kustomization.Spec.Validation == "none" {
+func (r *CueBuildReconciler) validate(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, dirPath string) error {
+	if cueBuild.Spec.Validation == "" || cueBuild.Spec.Validation == "none" {
 		return nil
 	}
 
-	timeout := kustomization.GetTimeout() + (time.Second * 1)
+	timeout := cueBuild.GetTimeout() + (time.Second * 1)
 	applyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	validation := kustomization.Spec.Validation
-	if validation == "server" && kustomization.Spec.Force {
+	validation := cueBuild.Spec.Validation
+	if validation == "server" && cueBuild.Spec.Force {
 		// Use client-side validation with force
 		validation = "client"
 		(logr.FromContext(ctx)).Info(fmt.Sprintf("Server-side validation is configured, falling-back to client-side validation since 'force' is enabled"))
 	}
 
 	cmd := fmt.Sprintf("cd %s && kubectl apply -f %s.yaml --timeout=%s --dry-run=%s --cache-dir=/tmp --force=%t",
-		dirPath, kustomization.GetUID(), kustomization.GetTimeout().String(), validation, kustomization.Spec.Force)
+		dirPath, cueBuild.GetUID(), cueBuild.GetTimeout().String(), validation, cueBuild.Spec.Force)
 
-	if kustomization.Spec.KubeConfig != nil {
+	if cueBuild.Spec.KubeConfig != nil {
 		kubeConfig, err := imp.WriteKubeConfig(ctx)
 		if err != nil {
 			return err
@@ -594,7 +551,7 @@ func (r *KustomizationReconciler) validate(ctx context.Context, kustomization ku
 		cmd = fmt.Sprintf("%s --kubeconfig=%s", cmd, kubeConfig)
 	} else {
 		// impersonate SA
-		if kustomization.Spec.ServiceAccountName != "" {
+		if cueBuild.Spec.ServiceAccountName != "" {
 			saToken, err := imp.GetServiceAccountToken(ctx)
 			if err != nil {
 				return fmt.Errorf("service account impersonation failed: %w", err)
@@ -615,17 +572,17 @@ func (r *KustomizationReconciler) validate(ctx context.Context, kustomization ku
 	return nil
 }
 
-func (r *KustomizationReconciler) apply(ctx context.Context, kustomization kustomizev1.Kustomization, imp *KustomizeImpersonation, dirPath string) (string, error) {
+func (r *CueBuildReconciler) apply(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, dirPath string) (string, error) {
 	start := time.Now()
-	timeout := kustomization.GetTimeout() + (time.Second * 1)
+	timeout := cueBuild.GetTimeout() + (time.Second * 1)
 	applyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	fieldManager := "kustomize-controller"
+	fieldManager := "cuebuild-controller"
 
 	cmd := fmt.Sprintf("cd %s && kubectl apply --field-manager=%s -f %s.yaml --timeout=%s --cache-dir=/tmp --force=%t",
-		dirPath, fieldManager, kustomization.GetUID(), kustomization.Spec.Interval.Duration.String(), kustomization.Spec.Force)
+		dirPath, fieldManager, cueBuild.GetUID(), cueBuild.Spec.Interval.Duration.String(), cueBuild.Spec.Force)
 
-	if kustomization.Spec.KubeConfig != nil {
+	if cueBuild.Spec.KubeConfig != nil {
 		kubeConfig, err := imp.WriteKubeConfig(ctx)
 		if err != nil {
 			return "", err
@@ -633,7 +590,7 @@ func (r *KustomizationReconciler) apply(ctx context.Context, kustomization kusto
 		cmd = fmt.Sprintf("%s --kubeconfig=%s", cmd, kubeConfig)
 	} else {
 		// impersonate SA
-		if kustomization.Spec.ServiceAccountName != "" {
+		if cueBuild.Spec.ServiceAccountName != "" {
 			saToken, err := imp.GetServiceAccountToken(ctx)
 			if err != nil {
 				return "", fmt.Errorf("service account impersonation failed: %w", err)
@@ -659,7 +616,7 @@ func (r *KustomizationReconciler) apply(ctx context.Context, kustomization kusto
 
 	resources := parseApplyOutput(output)
 	(logr.FromContext(ctx)).Info(
-		fmt.Sprintf("Kustomization applied in %s",
+		fmt.Sprintf("CueBuild applied in %s",
 			time.Now().Sub(start).String()),
 		"output", resources,
 	)
@@ -673,99 +630,99 @@ func (r *KustomizationReconciler) apply(ctx context.Context, kustomization kusto
 	return changeSet, nil
 }
 
-func (r *KustomizationReconciler) applyWithRetry(ctx context.Context, kustomization kustomizev1.Kustomization, imp *KustomizeImpersonation, revision, dirPath string, delay time.Duration) (string, error) {
-	changeSet, err := r.apply(ctx, kustomization, imp, dirPath)
+func (r *CueBuildReconciler) applyWithRetry(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, revision, dirPath string, delay time.Duration) (string, error) {
+	changeSet, err := r.apply(ctx, cueBuild, imp, dirPath)
 	if err != nil {
 		// retry apply due to CRD/CR race
 		if strings.Contains(err.Error(), "could not find the requested resource") ||
 			strings.Contains(err.Error(), "no matches for kind") {
 			(logr.FromContext(ctx)).Info("retrying apply", "error", err.Error())
 			time.Sleep(delay)
-			if changeSet, err := r.apply(ctx, kustomization, imp, dirPath); err != nil {
+			if changeSet, err := r.apply(ctx, cueBuild, imp, dirPath); err != nil {
 				return "", err
 			} else {
 				if changeSet != "" {
-					r.event(ctx, kustomization, revision, events.EventSeverityInfo, changeSet, nil)
+					r.event(ctx, cueBuild, revision, events.EventSeverityInfo, changeSet, nil)
 				}
 			}
 		} else {
 			return "", err
 		}
 	} else {
-		if changeSet != "" && kustomization.Status.LastAppliedRevision != revision {
-			r.event(ctx, kustomization, revision, events.EventSeverityInfo, changeSet, nil)
+		if changeSet != "" && cueBuild.Status.LastAppliedRevision != revision {
+			r.event(ctx, cueBuild, revision, events.EventSeverityInfo, changeSet, nil)
 		}
 	}
 	return changeSet, nil
 }
 
-func (r *KustomizationReconciler) prune(ctx context.Context, kubeClient client.Client, kustomization kustomizev1.Kustomization, newChecksum string) error {
-	if !kustomization.Spec.Prune || kustomization.Status.Snapshot == nil {
+func (r *CueBuildReconciler) prune(ctx context.Context, kubeClient client.Client, cueBuild cuebuildv1.CueBuild, newChecksum string) error {
+	if !cueBuild.Spec.Prune || cueBuild.Status.Snapshot == nil {
 		return nil
 	}
-	if kustomization.DeletionTimestamp.IsZero() && kustomization.Status.Snapshot.Checksum == newChecksum {
+	if cueBuild.DeletionTimestamp.IsZero() && cueBuild.Status.Snapshot.Checksum == newChecksum {
 		return nil
 	}
 
-	gc := NewGarbageCollector(kubeClient, *kustomization.Status.Snapshot, newChecksum, logr.FromContext(ctx))
+	gc := NewGarbageCollector(kubeClient, *cueBuild.Status.Snapshot, newChecksum, logr.FromContext(ctx))
 
-	if output, ok := gc.Prune(kustomization.GetTimeout(),
-		kustomization.GetName(),
-		kustomization.GetNamespace(),
+	if output, ok := gc.Prune(cueBuild.GetTimeout(),
+		cueBuild.GetName(),
+		cueBuild.GetNamespace(),
 	); !ok {
 		return fmt.Errorf("garbage collection failed: %s", output)
 	} else {
 		if output != "" {
 			(logr.FromContext(ctx)).Info(fmt.Sprintf("garbage collection completed: %s", output))
-			r.event(ctx, kustomization, newChecksum, events.EventSeverityInfo, output, nil)
+			r.event(ctx, cueBuild, newChecksum, events.EventSeverityInfo, output, nil)
 		}
 	}
 	return nil
 }
 
-func (r *KustomizationReconciler) checkHealth(ctx context.Context, statusPoller *polling.StatusPoller, kustomization kustomizev1.Kustomization, revision string, changed bool) error {
-	if len(kustomization.Spec.HealthChecks) == 0 {
+func (r *CueBuildReconciler) checkHealth(ctx context.Context, statusPoller *polling.StatusPoller, cueBuild cuebuildv1.CueBuild, revision string, changed bool) error {
+	if len(cueBuild.Spec.HealthChecks) == 0 {
 		return nil
 	}
 
-	hc := NewHealthCheck(kustomization, statusPoller)
+	hc := NewHealthCheck(cueBuild, statusPoller)
 
 	if err := hc.Assess(1 * time.Second); err != nil {
 		return err
 	}
 
-	healthiness := apimeta.FindStatusCondition(kustomization.Status.Conditions, kustomizev1.HealthyCondition)
+	healthiness := apimeta.FindStatusCondition(cueBuild.Status.Conditions, cuebuildv1.HealthyCondition)
 	healthy := healthiness != nil && healthiness.Status == metav1.ConditionTrue
 
-	if !healthy || (kustomization.Status.LastAppliedRevision != revision && changed) {
-		r.event(ctx, kustomization, revision, events.EventSeverityInfo, "Health check passed", nil)
+	if !healthy || (cueBuild.Status.LastAppliedRevision != revision && changed) {
+		r.event(ctx, cueBuild, revision, events.EventSeverityInfo, "Health check passed", nil)
 	}
 	return nil
 }
 
-func (r *KustomizationReconciler) reconcileDelete(ctx context.Context, kustomization kustomizev1.Kustomization) (ctrl.Result, error) {
-	if kustomization.Spec.Prune && !kustomization.Spec.Suspend {
+func (r *CueBuildReconciler) reconcileDelete(ctx context.Context, cueBuild cuebuildv1.CueBuild) (ctrl.Result, error) {
+	if cueBuild.Spec.Prune && !cueBuild.Spec.Suspend {
 		// create any necessary kube-clients
-		imp := NewKustomizeImpersonation(kustomization, r.Client, r.StatusPoller, "")
+		imp := NewCueBuildImpersonation(cueBuild, r.Client, r.StatusPoller, "")
 		client, _, err := imp.GetClient(ctx)
 		if err != nil {
-			err = fmt.Errorf("failed to build kube client for Kustomization: %w", err)
+			err = fmt.Errorf("failed to build kube client for CueBuild: %w", err)
 			(logr.FromContext(ctx)).Error(err, "Unable to prune for finalizer")
 			return ctrl.Result{}, err
 		}
-		if err := r.prune(ctx, client, kustomization, ""); err != nil {
-			r.event(ctx, kustomization, kustomization.Status.LastAppliedRevision, events.EventSeverityError, "pruning for deleted resource failed", nil)
+		if err := r.prune(ctx, client, cueBuild, ""); err != nil {
+			r.event(ctx, cueBuild, cueBuild.Status.LastAppliedRevision, events.EventSeverityError, "pruning for deleted resource failed", nil)
 			// Return the error so we retry the failed garbage collection
 			return ctrl.Result{}, err
 		}
 	}
 
 	// Record deleted status
-	r.recordReadiness(ctx, kustomization)
+	r.recordReadiness(ctx, cueBuild)
 
 	// Remove our finalizer from the list and update it
-	controllerutil.RemoveFinalizer(&kustomization, kustomizev1.KustomizationFinalizer)
-	if err := r.Update(ctx, &kustomization); err != nil {
+	controllerutil.RemoveFinalizer(&cueBuild, cuebuildv1.CueBuildFinalizer)
+	if err := r.Update(ctx, &cueBuild); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -773,13 +730,13 @@ func (r *KustomizationReconciler) reconcileDelete(ctx context.Context, kustomiza
 	return ctrl.Result{}, nil
 }
 
-func (r *KustomizationReconciler) event(ctx context.Context, kustomization kustomizev1.Kustomization, revision, severity, msg string, metadata map[string]string) {
-	r.EventRecorder.Event(&kustomization, "Normal", severity, msg)
-	objRef, err := reference.GetReference(r.Scheme, &kustomization)
+func (r *CueBuildReconciler) event(ctx context.Context, cueBuild cuebuildv1.CueBuild, revision, severity, msg string, metadata map[string]string) {
+	r.EventRecorder.Event(&cueBuild, "Normal", severity, msg)
+	objRef, err := reference.GetReference(r.Scheme, &cueBuild)
 	if err != nil {
 		(logr.FromContext(ctx)).WithValues(
-			strings.ToLower(kustomization.Kind),
-			fmt.Sprintf("%s/%s", kustomization.GetNamespace(), kustomization.GetName()),
+			strings.ToLower(cueBuild.Kind),
+			fmt.Sprintf("%s/%s", cueBuild.GetNamespace(), cueBuild.GetName()),
 		).Error(err, "unable to send event")
 		return
 	}
@@ -793,7 +750,7 @@ func (r *KustomizationReconciler) event(ctx context.Context, kustomization kusto
 		}
 
 		reason := severity
-		if c := apimeta.FindStatusCondition(kustomization.Status.Conditions, meta.ReadyCondition); c != nil {
+		if c := apimeta.FindStatusCondition(cueBuild.Status.Conditions, meta.ReadyCondition); c != nil {
 			reason = c.Reason
 		}
 
@@ -804,34 +761,34 @@ func (r *KustomizationReconciler) event(ctx context.Context, kustomization kusto
 	}
 }
 
-func (r *KustomizationReconciler) recordReadiness(ctx context.Context, kustomization kustomizev1.Kustomization) {
+func (r *CueBuildReconciler) recordReadiness(ctx context.Context, cueBuild cuebuildv1.CueBuild) {
 	if r.MetricsRecorder == nil {
 		return
 	}
 
-	objRef, err := reference.GetReference(r.Scheme, &kustomization)
+	objRef, err := reference.GetReference(r.Scheme, &cueBuild)
 	if err != nil {
 		(logr.FromContext(ctx)).Error(err, "unable to record readiness metric")
 		return
 	}
-	if rc := apimeta.FindStatusCondition(kustomization.Status.Conditions, meta.ReadyCondition); rc != nil {
-		r.MetricsRecorder.RecordCondition(*objRef, *rc, !kustomization.DeletionTimestamp.IsZero())
+	if rc := apimeta.FindStatusCondition(cueBuild.Status.Conditions, meta.ReadyCondition); rc != nil {
+		r.MetricsRecorder.RecordCondition(*objRef, *rc, !cueBuild.DeletionTimestamp.IsZero())
 	} else {
 		r.MetricsRecorder.RecordCondition(*objRef, metav1.Condition{
 			Type:   meta.ReadyCondition,
 			Status: metav1.ConditionUnknown,
-		}, !kustomization.DeletionTimestamp.IsZero())
+		}, !cueBuild.DeletionTimestamp.IsZero())
 	}
 }
 
-func (r *KustomizationReconciler) patchStatus(ctx context.Context, req ctrl.Request, newStatus kustomizev1.KustomizationStatus) error {
-	var kustomization kustomizev1.Kustomization
-	if err := r.Get(ctx, req.NamespacedName, &kustomization); err != nil {
+func (r *CueBuildReconciler) patchStatus(ctx context.Context, req ctrl.Request, newStatus cuebuildv1.CueBuildStatus) error {
+	var cueBuild cuebuildv1.CueBuild
+	if err := r.Get(ctx, req.NamespacedName, &cueBuild); err != nil {
 		return err
 	}
 
-	patch := client.MergeFrom(kustomization.DeepCopy())
-	kustomization.Status = newStatus
+	patch := client.MergeFrom(cueBuild.DeepCopy())
+	cueBuild.Status = newStatus
 
-	return r.Status().Patch(ctx, &kustomization, patch)
+	return r.Status().Patch(ctx, &cueBuild, patch)
 }
