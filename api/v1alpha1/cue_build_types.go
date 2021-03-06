@@ -58,14 +58,10 @@ type CueBuildSpec struct {
 	// +optional
 	KubeConfig *KubeConfig `json:"kubeConfig,omitempty"`
 
-	// Package paths to include in the cue build.
+	// Package to include in the cue build.
 	// Defaults to 'None', which translates to everything via './...'.
 	// +optional
-	Paths []string `json:"paths,omitempty"`
-
-	// Expression to evaluate that should be possible to pass directly
-	// to `kubectl apply -f -`.
-	Expression string `json:"expression"`
+	Packages []string `json:"packages,omitempty"`
 
 	// Prune enables garbage collection.
 	// +required
@@ -183,8 +179,7 @@ func CueBuildNotReady(k CueBuild, revision, reason, message string) CueBuild {
 	return k
 }
 
-// CueBuildNotReady registers a failed apply attempt of the given CueBuild,
-// including a Snapshot.
+// CueBuildNotReadySnapshot registers a failed apply attempt of the given CueBuild including a Snapshot.
 func CueBuildNotReadySnapshot(k CueBuild, snapshot *Snapshot, revision, reason, message string) CueBuild {
 	SetCueBuildReadiness(&k, metav1.ConditionFalse, reason, trimString(message, MaxConditionMessageLength), revision)
 	SetCueBuildHealthiness(&k, metav1.ConditionFalse, reason, reason)
@@ -247,7 +242,7 @@ const (
 // +genclient:Namespaced
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=cb
-// +kubebuilder:resource:path=cuebuilders
+// +kubebuilder:resource:path=cuebuilds
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status",description=""
 // +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].message",description=""

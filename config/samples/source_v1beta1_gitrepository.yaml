@@ -1,19 +1,9 @@
 apiVersion: source.toolkit.fluxcd.io/v1beta1
 kind: GitRepository
 metadata:
-  name: webapp-latest
+  name: addreas-homelab
 spec:
   interval: 1m
-  url: https://github.com/stefanprodan/podinfo
+  url: https://github.com/addreas/cuebernetes
   ref:
-    branch: master
----
-apiVersion: source.toolkit.fluxcd.io/v1beta1
-kind: GitRepository
-metadata:
-  name: webapp-releases
-spec:
-  interval: 1m
-  url: https://github.com/stefanprodan/podinfo
-  ref:
-    semver: ">=3.2.3"
+    branch: homelab

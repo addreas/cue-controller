@@ -1,41 +1,21 @@
-apiVersion: cuebuild.toolkit.fluxcd.io/v1beta1
+apiVersion: cuebuild.toolkit.fluxcd.io/v1alpha1
 kind: CueBuild
 metadata:
-  name: webapp-dev
+  name: addreas-homelab
 spec:
   interval: 5m
-  path: "./deploy/..."
+  packages:
+  - ./resources/default
   prune: true
   sourceRef:
     kind: GitRepository
-    name: webapp-latest
+    name: addreas-homelab
   validation: client
   healthChecks:
-    - kind: Deployment
-      name: backend
-      namespace: webapp
-    - kind: Deployment
-      name: frontend
-      namespace: webapp
-  timeout: 2m
----
-apiVersion: cuebuild.toolkit.fluxcd.io/v1beta1
-kind: CueBuild
-metadata:
-  name: webapp-production
-spec:
-  interval: 15m
-  path: "./deploy/overlays/production/"
-  prune: true
-  sourceRef:
-    kind: GitRepository
-    name: webapp-releases
-  validation: client
-  healthChecks:
-    - kind: Deployment
-      name: backend
-      namespace: production
-    - kind: Deployment
-      name: frontend
-      namespace: production
+    - kind: StatefulSet
+      name: bitwarden
+      namespace: default
+    - kind: StatefulSet
+      name: unifi-controller
+      namespace: default
   timeout: 2m

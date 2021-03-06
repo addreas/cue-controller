@@ -17,7 +17,9 @@ limitations under the License.
 package controllers
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha1"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -25,11 +27,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
-	securejoin "github.com/cyphar/filepath-securejoin"
+	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/load"
+	"cuelang.org/go/encoding/yaml"
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/runtime/events"
 	"github.com/fluxcd/pkg/runtime/metrics"
@@ -54,7 +57,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
-	"sigs.k8s.io/kustomize/api/filesys"
 
 	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
@@ -291,28 +293,29 @@ func (r *CueBuildReconciler) reconcile(
 		), err
 	}
 
-	// check build path exists
-	dirPath, err := securejoin.SecureJoin(tmpDir, cueBuild.Spec.Paths[0])
-	if err != nil {
-		return cuebuildv1.CueBuildNotReady(
-			cueBuild,
-			source.GetArtifact().Revision,
-			cuebuildv1.ArtifactFailedReason,
-			err.Error(),
-		), err
+	instances := cue.Build(load.Instances(cueBuild.Spec.Packages, &load.Config{
+		Dir: tmpDir,
+	}))
+
+	errors := []string{}
+	for _, instance := range instances {
+		if instance.Err != nil {
+			errors = append(errors, instance.Err.Error())
+		} else if err := instance.Value().Validate(cue.Concrete(true)); err != nil {
+			errors = append(errors, fmt.Sprint(err))
+		}
 	}
-	if _, err := os.Stat(dirPath); err != nil {
-		err = fmt.Errorf("cueBuild path not found: %w", err)
+	if len(errors) > 0 {
 		return cuebuildv1.CueBuildNotReady(
 			cueBuild,
 			source.GetArtifact().Revision,
-			cuebuildv1.ArtifactFailedReason,
-			err.Error(),
+			cuebuildv1.ValidationFailedReason,
+			strings.Join(errors, "\n"),
 		), err
 	}
 
 	// create any necessary kube-clients for impersonation
-	impersonation := NewCueBuildImpersonation(cueBuild, r.Client, r.StatusPoller, dirPath)
+	impersonation := NewCueBuildImpersonation(cueBuild, r.Client, r.StatusPoller, tmpDir)
 	kubeClient, statusPoller, err := impersonation.GetClient(ctx)
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
@@ -323,30 +326,29 @@ func (r *CueBuildReconciler) reconcile(
 		), fmt.Errorf("failed to build kube client: %w", err)
 	}
 
-	// generate cueBuild.yaml and calculate the manifests checksum
-	checksum, err := r.generate(ctx, kubeClient, cueBuild, dirPath)
+	// build the cueBuild and generate the GC snapshot
+	resources, err := r.build(ctx, cueBuild, instances)
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
 			cueBuild,
 			source.GetArtifact().Revision,
 			cuebuildv1.BuildFailedReason,
-			err.Error(),
+			fmt.Sprint("failed to build", err),
 		), err
 	}
 
-	// build the cueBuild and generate the GC snapshot
-	snapshot, err := r.build(ctx, cueBuild, checksum, dirPath)
+	snapshot, err := cuebuildv1.NewSnapshot(resources, fmt.Sprintf("%x", sha1.Sum(resources)))
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
 			cueBuild,
 			source.GetArtifact().Revision,
 			cuebuildv1.BuildFailedReason,
-			err.Error(),
+			fmt.Sprint("failed to create snapshot", err),
 		), err
 	}
 
 	// dry-run apply
-	err = r.validate(ctx, cueBuild, impersonation, dirPath)
+	err = r.validate(ctx, cueBuild, impersonation, resources)
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
 			cueBuild,
@@ -357,7 +359,7 @@ func (r *CueBuildReconciler) reconcile(
 	}
 
 	// apply
-	changeSet, err := r.applyWithRetry(ctx, cueBuild, impersonation, source.GetArtifact().Revision, dirPath, 5*time.Second)
+	changeSet, err := r.applyWithRetry(ctx, cueBuild, impersonation, source.GetArtifact().Revision, resources, 5*time.Second)
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
 			cueBuild,
@@ -368,7 +370,7 @@ func (r *CueBuildReconciler) reconcile(
 	}
 
 	// prune
-	err = r.prune(ctx, kubeClient, cueBuild, checksum)
+	err = r.prune(ctx, kubeClient, cueBuild, snapshot.Checksum)
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
 			cueBuild,
@@ -423,7 +425,7 @@ func (r *CueBuildReconciler) checkDependencies(cueBuild cuebuildv1.CueBuild) err
 	return nil
 }
 
-func (r *KustomizationReconciler) download(artifactURL string, tmpDir string) error {
+func (r *CueBuildReconciler) download(artifactURL string, tmpDir string) error {
 	if hostname := os.Getenv("SOURCE_CONTROLLER_LOCALHOST"); hostname != "" {
 		u, err := url.Parse(artifactURL)
 		if err != nil {
@@ -495,36 +497,40 @@ func (r *CueBuildReconciler) getSource(ctx context.Context, cueBuild cuebuildv1.
 	return source, nil
 }
 
-func (r *CueBuildReconciler) generate(ctx context.Context, kubeClient client.Client, cueBuild cuebuildv1.CueBuild, dirPath string) (string, error) {
-	gen := NewGenerator(cueBuild, kubeClient)
-	return gen.WriteFile(ctx, dirPath)
-}
-
-func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueBuild, checksum, dirPath string) (*cuebuildv1.Snapshot, error) {
+func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueBuild, instances []*cue.Instance) ([]byte, error) {
 	timeout := cueBuild.GetTimeout()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	fs := filesys.MakeFsOnDisk()
-	m, err := buildCueBuild(fs, dirPath)
-	if err != nil {
-		return nil, fmt.Errorf("cuebuild build failed: %w", err)
+	var returnError error
+	resources := bytes.Buffer{}
+	for _, inst := range instances {
+		inst.Value().Walk(func(v cue.Value) bool {
+			if v.Kind() == cue.StructKind &&
+				v.Lookup("apiVersion").Exists() &&
+				v.Lookup("kind").Exists() &&
+				v.Lookup("metadata", "name").Exists() {
+
+				bytes, err := yaml.Encode(v)
+				if err != nil {
+					returnError = fmt.Errorf("%s\nfailed to json marshal: %s", returnError, err)
+				}
+				resources.Write(bytes)
+				resources.WriteString("---\n")
+				return false
+			}
+			return true
+		}, nil)
 	}
 
-	resources, err := m.AsYaml()
-	if err != nil {
-		return nil, fmt.Errorf("cuebuild build failed: %w", err)
+	if returnError != nil {
+		return nil, returnError
 	}
 
-	manifestsFile := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", cueBuild.GetUID()))
-	if err := fs.WriteFile(manifestsFile, resources); err != nil {
-		return nil, err
-	}
-
-	return cuebuildv1.NewSnapshot(resources, checksum)
+	return resources.Bytes(), nil
 }
 
-func (r *CueBuildReconciler) validate(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, dirPath string) error {
+func (r *CueBuildReconciler) validate(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, resources []byte) error {
 	if cueBuild.Spec.Validation == "" || cueBuild.Spec.Validation == "none" {
 		return nil
 	}
@@ -540,8 +546,7 @@ func (r *CueBuildReconciler) validate(ctx context.Context, cueBuild cuebuildv1.C
 		(logr.FromContext(ctx)).Info(fmt.Sprintf("Server-side validation is configured, falling-back to client-side validation since 'force' is enabled"))
 	}
 
-	cmd := fmt.Sprintf("cd %s && kubectl apply -f %s.yaml --timeout=%s --dry-run=%s --cache-dir=/tmp --force=%t",
-		dirPath, cueBuild.GetUID(), cueBuild.GetTimeout().String(), validation, cueBuild.Spec.Force)
+	cmd := fmt.Sprintf("kubectl apply -f - --timeout=%s --dry-run=%s --cache-dir=/tmp --force=%t", cueBuild.GetTimeout().String(), validation, cueBuild.Spec.Force)
 
 	if cueBuild.Spec.KubeConfig != nil {
 		kubeConfig, err := imp.WriteKubeConfig(ctx)
@@ -562,6 +567,7 @@ func (r *CueBuildReconciler) validate(ctx context.Context, cueBuild cuebuildv1.C
 	}
 
 	command := exec.CommandContext(applyCtx, "/bin/sh", "-c", cmd)
+	command.Stdin = bytes.NewReader(resources)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -572,15 +578,15 @@ func (r *CueBuildReconciler) validate(ctx context.Context, cueBuild cuebuildv1.C
 	return nil
 }
 
-func (r *CueBuildReconciler) apply(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, dirPath string) (string, error) {
+func (r *CueBuildReconciler) apply(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, resources []byte) (string, error) {
 	start := time.Now()
 	timeout := cueBuild.GetTimeout() + (time.Second * 1)
 	applyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	fieldManager := "cuebuild-controller"
 
-	cmd := fmt.Sprintf("cd %s && kubectl apply --field-manager=%s -f %s.yaml --timeout=%s --cache-dir=/tmp --force=%t",
-		dirPath, fieldManager, cueBuild.GetUID(), cueBuild.Spec.Interval.Duration.String(), cueBuild.Spec.Force)
+	cmd := fmt.Sprintf("kubectl apply --field-manager=%s -f - --timeout=%s --cache-dir=/tmp --force=%t",
+		fieldManager, cueBuild.Spec.Interval.Duration.String(), cueBuild.Spec.Force)
 
 	if cueBuild.Spec.KubeConfig != nil {
 		kubeConfig, err := imp.WriteKubeConfig(ctx)
@@ -601,6 +607,7 @@ func (r *CueBuildReconciler) apply(ctx context.Context, cueBuild cuebuildv1.CueB
 	}
 
 	command := exec.CommandContext(applyCtx, "/bin/sh", "-c", cmd)
+	command.Stdin = bytes.NewReader(resources)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -614,15 +621,15 @@ func (r *CueBuildReconciler) apply(ctx context.Context, cueBuild cuebuildv1.CueB
 		return "", fmt.Errorf("apply failed: %s", parseApplyError(output))
 	}
 
-	resources := parseApplyOutput(output)
+	outputResources := parseApplyOutput(output)
 	(logr.FromContext(ctx)).Info(
 		fmt.Sprintf("CueBuild applied in %s",
 			time.Now().Sub(start).String()),
-		"output", resources,
+		"output", outputResources,
 	)
 
 	changeSet := ""
-	for obj, action := range resources {
+	for obj, action := range outputResources {
 		if action != "" && action != "unchanged" {
 			changeSet += obj + " " + action + "\n"
 		}
@@ -630,15 +637,15 @@ func (r *CueBuildReconciler) apply(ctx context.Context, cueBuild cuebuildv1.CueB
 	return changeSet, nil
 }
 
-func (r *CueBuildReconciler) applyWithRetry(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, revision, dirPath string, delay time.Duration) (string, error) {
-	changeSet, err := r.apply(ctx, cueBuild, imp, dirPath)
+func (r *CueBuildReconciler) applyWithRetry(ctx context.Context, cueBuild cuebuildv1.CueBuild, imp *CueBuildImpersonation, revision string, resources []byte, delay time.Duration) (string, error) {
+	changeSet, err := r.apply(ctx, cueBuild, imp, resources)
 	if err != nil {
 		// retry apply due to CRD/CR race
 		if strings.Contains(err.Error(), "could not find the requested resource") ||
 			strings.Contains(err.Error(), "no matches for kind") {
 			(logr.FromContext(ctx)).Info("retrying apply", "error", err.Error())
 			time.Sleep(delay)
-			if changeSet, err := r.apply(ctx, cueBuild, imp, dirPath); err != nil {
+			if changeSet, err := r.apply(ctx, cueBuild, imp, resources); err != nil {
 				return "", err
 			} else {
 				if changeSet != "" {

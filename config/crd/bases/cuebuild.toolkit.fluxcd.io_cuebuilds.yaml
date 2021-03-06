@@ -6,13 +6,13 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.4.1
   creationTimestamp: null
-  name: cuebuilders.cuebuild.toolkit.fluxcd.io
+  name: cuebuilds.cuebuild.toolkit.fluxcd.io
 spec:
   group: cuebuild.toolkit.fluxcd.io
   names:
     kind: CueBuild
     listKind: CueBuildList
-    plural: cuebuilders
+    plural: cuebuilds
     singular: cuebuild
   scope: Namespaced
   versions:
@@ -64,10 +64,6 @@ spec:
                   - name
                   type: object
                 type: array
-              expression:
-                description: Expression to evaluate that should be possible to pass
-                  directly to `kubectl apply -f -`.
-                type: string
               force:
                 default: false
                 description: Force instructs the controller to recreate resources
@@ -122,9 +118,9 @@ spec:
                     - name
                     type: object
                 type: object
-              paths:
-                description: Package paths to include in the cue build. Defaults to
-                  'None', which translates to everything via './...'.
+              packages:
+                description: Package to include in the cue build. Defaults to 'None',
+                  which translates to everything via './...'.
                 items:
                   type: string
                 type: array
@@ -184,7 +180,6 @@ spec:
                 - server
                 type: string
             required:
-            - expression
             - interval
             - prune
             - sourceRef

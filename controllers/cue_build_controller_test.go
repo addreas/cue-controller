@@ -189,7 +189,7 @@ var _ = Describe("CueBuildReconciler", func() {
 				Spec: cuebuildv1.CueBuildSpec{
 					KubeConfig: kubeconfig,
 					Interval:   metav1.Duration{Duration: reconciliationInterval},
-					Paths:      []string{"./..."},
+					Packages:   []string{"./..."},
 					Prune:      true,
 					SourceRef: cuebuildv1.CrossNamespaceSourceReference{
 						Kind: sourcev1.GitRepositoryKind,
@@ -243,26 +243,31 @@ var _ = Describe("CueBuildReconciler", func() {
 			Entry("namespace-sa", refTestCase{
 				artifacts: []testserver.File{
 					{
-						Name: "namespace.yaml",
-						Body: `---
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: test
+						Name: "namespace.cue",
+						Body: `
+k: Namespace: test: {
+	apiVersion: "v1"
+	kind:       "Namespace"
+	metadata: name: "test"
+}
 `,
 					},
 					{
-						Name: "service-account.yaml",
-						Body: `---
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: test
-  namespace: test
-  labels:
-    environment: ${env:=dev}
-    region: "${_Region}" 
-    zone: "${zone}"
+						Name: "service-account.cue",
+						Body: `
+k: ServiceAccount: test: {
+	apiVersion: "v1"
+	kind:       "ServiceAccount"
+	metadata: {
+		name:      "test"
+		namespace: "test"
+		labels: {
+			environment: "${env:=dev}"
+			region:      "${_Region}"
+			zone:        "${zone}"
+		}
+	}
+}
 `,
 					},
 				},
@@ -274,24 +279,25 @@ metadata:
 
 		Describe("CueBuild resource replacement", func() {
 			deploymentManifest := func(namespace, selector string) string {
-				return fmt.Sprintf(`---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: test
-  namespace: %s
-spec:
-  selector:
-    matchLabels:
-      app: %[2]s
-  template:
-    metadata:
-      labels:
-        app: %[2]s
-    spec:
-      containers:
-      - name: test
-        image: podinfo
+				return fmt.Sprintf(`
+k: Deployment: test: {
+	apiVersion: "apps/v1"
+	kind:       "Deployment"
+	metadata: {
+		name:      "test"
+		namespace: "%s"
+	}
+	spec: {
+		selector: matchLabels: app: "%[2]s"
+		template: {
+			metadata: labels: app: "%[2]s"
+			spec: containers: [{
+				name:  "test"
+				image: "podinfo"
+			}]
+		}
+	}
+}
 `,
 					namespace, selector)
 			}
@@ -355,7 +361,7 @@ spec:
 					Spec: cuebuildv1.CueBuildSpec{
 						KubeConfig: kubeconfig,
 						Interval:   metav1.Duration{Duration: reconciliationInterval},
-						Paths:      []string{"./..."},
+						Packages:   []string{"./..."},
 						Prune:      true,
 						SourceRef: cuebuildv1.CrossNamespaceSourceReference{
 							Kind: sourcev1.GitRepositoryKind,

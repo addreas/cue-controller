@@ -27,7 +27,6 @@ RUN go mod download
 # copy source code
 COPY main.go main.go
 COPY controllers/ controllers/
-COPY internal/ internal/
 
 # build
 RUN CGO_ENABLED=0 go build -a -o cuebuild-controller main.go

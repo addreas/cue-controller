@@ -130,14 +130,14 @@ When specified, KubeConfig takes precedence over ServiceAccountName.</p>
 </tr>
 <tr>
 <td>
-<code>paths</code><br>
+<code>packages</code><br>
 <em>
 []string
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Package paths to include in the cue build.
+<p>Package to include in the cue build.
 Defaults to &lsquo;None&rsquo;, which translates to everything via &lsquo;./&hellip;&rsquo;.</p>
 </td>
 </tr>
@@ -329,7 +329,7 @@ string
 </td>
 <td>
 <em>(Optional)</em>
-<p>Namespace of the referent, defaults to the Kustomization namespace</p>
+<p>Namespace of the referent, defaults to the CueBuild namespace</p>
 </td>
 </tr>
 </tbody>
@@ -415,14 +415,14 @@ When specified, KubeConfig takes precedence over ServiceAccountName.</p>
 </tr>
 <tr>
 <td>
-<code>paths</code><br>
+<code>packages</code><br>
 <em>
 []string
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Package paths to include in the cue build.
+<p>Package to include in the cue build.
 Defaults to &lsquo;None&rsquo;, which translates to everything via &lsquo;./&hellip;&rsquo;.</p>
 </td>
 </tr>

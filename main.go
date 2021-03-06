@@ -112,7 +112,7 @@ func main() {
 		HealthProbeBindAddress: healthAddr,
 		Port:                   9443,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "cuebuild.fluxcd.io",
+		LeaderElectionID:       "cuebuild.addem.se",
 		Namespace:              watchNamespace,
 		Logger:                 ctrl.Log,
 	})

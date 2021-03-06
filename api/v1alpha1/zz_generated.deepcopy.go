@@ -120,8 +120,8 @@ func (in *CueBuildSpec) DeepCopyInto(out *CueBuildSpec) {
 		*out = new(KubeConfig)
 		**out = **in
 	}
-	if in.Paths != nil {
-		in, out := &in.Paths, &out.Paths
+	if in.Packages != nil {
+		in, out := &in.Packages, &out.Packages
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
