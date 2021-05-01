@@ -34,7 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 	// +kubebuilder:scaffold:imports
 )
@@ -77,7 +77,7 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(cfg).ToNot(BeNil())
 
-	err = kustomizev1.AddToScheme(scheme.Scheme)
+	err = cuebuildv1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = sourcev1.AddToScheme(scheme.Scheme)
@@ -90,13 +90,13 @@ var _ = BeforeSuite(func(done Done) {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	err = (&KustomizationReconciler{
+	err = (&CueBuildReconciler{
 		Client:                k8sManager.GetClient(),
 		Scheme:                scheme.Scheme,
-		EventRecorder:         k8sManager.GetEventRecorderFor("kustomize-controller"),
+		EventRecorder:         k8sManager.GetEventRecorderFor("cuebuild-controller"),
 		ExternalEventRecorder: nil,
-	}).SetupWithManager(k8sManager, KustomizationReconcilerOptions{MaxConcurrentReconciles: 1})
-	Expect(err).ToNot(HaveOccurred(), "failed to setup KustomizationReconciler")
+	}).SetupWithManager(k8sManager, CueBuildReconcilerOptions{MaxConcurrentReconciles: 1})
+	Expect(err).ToNot(HaveOccurred(), "failed to setup CueBuildReconciler")
 
 	go func() {
 		err = k8sManager.Start(ctrl.SetupSignalHandler())

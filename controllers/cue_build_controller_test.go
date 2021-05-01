@@ -44,20 +44,20 @@ import (
 	"github.com/fluxcd/pkg/testserver"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
 
-var _ = Describe("KustomizationReconciler", func() {
+var _ = Describe("CueBuildReconciler", func() {
 	const (
 		timeout                = time.Second * 30
 		interval               = time.Second * 1
 		reconciliationInterval = time.Second * 5
 	)
 
-	Context("Kustomization", func() {
+	Context("CueBuild", func() {
 		var (
 			namespace  *corev1.Namespace
-			kubeconfig *kustomizev1.KubeConfig
+			kubeconfig *cuebuildv1.KubeConfig
 			httpServer *testserver.ArtifactServer
 			err        error
 		)
@@ -72,7 +72,7 @@ var _ = Describe("KustomizationReconciler", func() {
 			Expect(err).ToNot(HaveOccurred())
 			kubecfgSecret.Namespace = namespace.Name
 			Expect(k8sClient.Create(context.Background(), kubecfgSecret)).To(Succeed())
-			kubeconfig = &kustomizev1.KubeConfig{
+			kubeconfig = &cuebuildv1.KubeConfig{
 				SecretRef: meta.LocalObjectReference{
 					Name: kubecfgSecret.Name,
 				},
@@ -97,7 +97,7 @@ var _ = Describe("KustomizationReconciler", func() {
 			expectRevision string
 		}
 
-		DescribeTable("Kustomization tests", func(t refTestCase) {
+		DescribeTable("CueBuild tests", func(t refTestCase) {
 			artifact, err := httpServer.ArtifactFromFiles(t.artifacts)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -112,47 +112,21 @@ var _ = Describe("KustomizationReconciler", func() {
 			Expect(k8sClient.Status().Update(context.Background(), repository)).Should(Succeed())
 			defer k8sClient.Delete(context.Background(), repository)
 
-			configName := types.NamespacedName{
-				Name:      fmt.Sprintf("%s", randStringRunes(5)),
-				Namespace: namespace.Name,
-			}
-			config := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      configName.Name,
-					Namespace: configName.Namespace,
-				},
-				Data: map[string]string{"zone": "\naz-1a\n"},
-			}
-			Expect(k8sClient.Create(context.Background(), config)).Should(Succeed())
-
-			secretName := types.NamespacedName{
-				Name:      fmt.Sprintf("%s", randStringRunes(5)),
-				Namespace: namespace.Name,
-			}
-			secret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      secretName.Name,
-					Namespace: secretName.Namespace,
-				},
-				StringData: map[string]string{"zone": "\naz-1b\n"},
-			}
-			Expect(k8sClient.Create(context.Background(), secret)).Should(Succeed())
-
 			kName := types.NamespacedName{
 				Name:      fmt.Sprintf("%s", randStringRunes(5)),
 				Namespace: namespace.Name,
 			}
-			k := &kustomizev1.Kustomization{
+			k := &cuebuildv1.CueBuild{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      kName.Name,
 					Namespace: kName.Namespace,
 				},
-				Spec: kustomizev1.KustomizationSpec{
+				Spec: cuebuildv1.CueBuildSpec{
 					KubeConfig: kubeconfig,
 					Interval:   metav1.Duration{Duration: reconciliationInterval},
-					Path:       "./",
+					Packages:   []string{"./..."},
 					Prune:      true,
-					SourceRef: kustomizev1.CrossNamespaceSourceReference{
+					SourceRef: cuebuildv1.CrossNamespaceSourceReference{
 						Kind: sourcev1.GitRepositoryKind,
 						Name: repository.Name,
 					},
@@ -160,19 +134,6 @@ var _ = Describe("KustomizationReconciler", func() {
 					Timeout:    nil,
 					Validation: "client",
 					Force:      false,
-					PostBuild: &kustomizev1.PostBuild{
-						Substitute: map[string]string{"_Region": "eu-central-1"},
-						SubstituteFrom: []kustomizev1.SubstituteReference{
-							{
-								Kind: "ConfigMap",
-								Name: configName.Name,
-							},
-							{
-								Kind: "Secret",
-								Name: secretName.Name,
-							},
-						},
-					},
 					HealthChecks: []meta.NamespacedObjectKindReference{
 						{
 							APIVersion: "v1",
@@ -186,7 +147,7 @@ var _ = Describe("KustomizationReconciler", func() {
 			Expect(k8sClient.Create(context.Background(), k)).Should(Succeed())
 			defer k8sClient.Delete(context.Background(), k)
 
-			got := &kustomizev1.Kustomization{}
+			got := &cuebuildv1.CueBuild{}
 			var readyCondition metav1.Condition
 			Eventually(func() bool {
 				_ = k8sClient.Get(context.Background(), kName, got)
@@ -201,12 +162,12 @@ var _ = Describe("KustomizationReconciler", func() {
 
 			Expect(readyCondition.Status).To(Equal(t.expectStatus))
 			Expect(got.Status.LastAppliedRevision).To(Equal(t.expectRevision))
-			Expect(apimeta.IsStatusConditionTrue(got.Status.Conditions, kustomizev1.HealthyCondition)).To(BeTrue())
+			Expect(apimeta.IsStatusConditionTrue(got.Status.Conditions, cuebuildv1.HealthyCondition)).To(BeTrue())
 
 			ns := &corev1.Namespace{}
 			Expect(k8sClient.Get(context.Background(), types.NamespacedName{Name: "test"}, ns)).Should(Succeed())
-			Expect(ns.Labels[fmt.Sprintf("%s/name", kustomizev1.GroupVersion.Group)]).To(Equal(kName.Name))
-			Expect(ns.Labels[fmt.Sprintf("%s/namespace", kustomizev1.GroupVersion.Group)]).To(Equal(kName.Namespace))
+			Expect(ns.Labels[fmt.Sprintf("%s/name", cuebuildv1.GroupVersion.Group)]).To(Equal(kName.Name))
+			Expect(ns.Labels[fmt.Sprintf("%s/namespace", cuebuildv1.GroupVersion.Group)]).To(Equal(kName.Namespace))
 
 			sa := &corev1.ServiceAccount{}
 			Expect(k8sClient.Get(context.Background(), types.NamespacedName{Name: "test", Namespace: "test"}, sa)).Should(Succeed())
@@ -217,26 +178,41 @@ var _ = Describe("KustomizationReconciler", func() {
 			Entry("namespace-sa", refTestCase{
 				artifacts: []testserver.File{
 					{
-						Name: "namespace.yaml",
-						Body: `---
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: test
+						Name: "cue.mod/module.cue",
+						Body: `
+module: ""
 `,
 					},
 					{
-						Name: "service-account.yaml",
-						Body: `---
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: test
-  namespace: test
-  labels:
-    environment: ${env:=dev}
-    region: "${_Region}" 
-    zone: "${zone}"
+						Name: "namespace.cue",
+						Body: `
+package kube
+
+k: Namespace: test: {
+	apiVersion: "v1"
+	kind:       "Namespace"
+	metadata: name: "test"
+}
+`,
+					},
+					{
+						Name: "folder/service-account.cue",
+						Body: `
+package kube
+
+k: ServiceAccount: test: {
+	apiVersion: "v1"
+	kind:       "ServiceAccount"
+	metadata: {
+		name:      "test"
+		namespace: "test"
+		labels: {
+			environment: "dev"
+			region:      "eu-central-1"
+			zone:        "az-1b"
+		}
+	}
+}
 `,
 					},
 				},
@@ -246,34 +222,42 @@ metadata:
 			}),
 		)
 
-		Describe("Kustomization resource replacement", func() {
+		Describe("CueBuild resource replacement", func() {
 			deploymentManifest := func(namespace, selector string) string {
-				return fmt.Sprintf(`---
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: test
-  namespace: %s
-spec:
-  selector:
-    matchLabels:
-      app: %[2]s
-  template:
-    metadata:
-      labels:
-        app: %[2]s
-    spec:
-      containers:
-      - name: test
-        image: podinfo
+				return fmt.Sprintf(`
+package kube
+
+k: Deployment: test: {
+	apiVersion: "apps/v1"
+	kind:       "Deployment"
+	metadata: {
+		name:      "test"
+		namespace: "%s"
+	}
+	spec: {
+		selector: matchLabels: app: "%[2]s"
+		template: {
+			metadata: labels: app: "%[2]s"
+			spec: containers: [{
+				name:  "test"
+				image: "podinfo"
+			}]
+		}
+	}
+}
 `,
 					namespace, selector)
 			}
 
 			It("should replace immutable field resource using force", func() {
-				manifests := []testserver.File{
+				manifests := []testserver.File{{
+					Name: "cue.mod/module.cue",
+					Body: `
+module: ""
+`,
+				},
 					{
-						Name: "deployment.yaml",
+						Name: "deployment.cue",
 						Body: deploymentManifest(namespace.Name, "v1"),
 					},
 				}
@@ -295,17 +279,17 @@ spec:
 					Name:      fmt.Sprintf("%s", randStringRunes(5)),
 					Namespace: namespace.Name,
 				}
-				k := &kustomizev1.Kustomization{
+				k := &cuebuildv1.CueBuild{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      kName.Name,
 						Namespace: kName.Namespace,
 					},
-					Spec: kustomizev1.KustomizationSpec{
+					Spec: cuebuildv1.CueBuildSpec{
 						KubeConfig: kubeconfig,
 						Interval:   metav1.Duration{Duration: reconciliationInterval},
-						Path:       "./",
+						Packages:   []string{"./..."},
 						Prune:      true,
-						SourceRef: kustomizev1.CrossNamespaceSourceReference{
+						SourceRef: cuebuildv1.CrossNamespaceSourceReference{
 							Kind: sourcev1.GitRepositoryKind,
 							Name: repository.Name,
 						},
@@ -318,7 +302,7 @@ spec:
 				Expect(k8sClient.Create(context.Background(), k)).To(Succeed())
 				defer k8sClient.Delete(context.Background(), k)
 
-				got := &kustomizev1.Kustomization{}
+				got := &cuebuildv1.CueBuild{}
 				Eventually(func() bool {
 					_ = k8sClient.Get(context.Background(), kName, got)
 					c := apimeta.FindStatusCondition(got.Status.Conditions, meta.ReadyCondition)
@@ -330,9 +314,14 @@ spec:
 				Expect(k8sClient.Get(context.Background(), types.NamespacedName{Name: "test", Namespace: namespace.Name}, deployment)).To(Succeed())
 				Expect(deployment.Spec.Selector.MatchLabels["app"]).To(Equal("v1"))
 
-				manifests = []testserver.File{
+				manifests = []testserver.File{{
+					Name: "cue.mod/module.cue",
+					Body: `
+module: ""
+`,
+				},
 					{
-						Name: "deployment.yaml",
+						Name: "deployment.cue",
 						Body: deploymentManifest(namespace.Name, "v2"),
 					},
 				}

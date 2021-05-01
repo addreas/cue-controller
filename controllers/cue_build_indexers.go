@@ -23,12 +23,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 	"github.com/fluxcd/pkg/runtime/dependency"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 )
 
-func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) func(obj client.Object) []reconcile.Request {
+func (r *CueBuildReconciler) requestsForRevisionChangeOf(indexKey string) func(obj client.Object) []reconcile.Request {
 	return func(obj client.Object) []reconcile.Request {
 		repo, ok := obj.(interface {
 			GetArtifact() *sourcev1.Artifact
@@ -42,7 +42,7 @@ func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) f
 		}
 
 		ctx := context.Background()
-		var list kustomizev1.KustomizationList
+		var list cuebuildv1.CueBuildList
 		if err := r.List(ctx, &list, client.MatchingFields{
 			indexKey: ObjectKey(obj).String(),
 		}); err != nil {
@@ -51,7 +51,7 @@ func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) f
 		var dd []dependency.Dependent
 		for _, d := range list.Items {
 			// If the revision of the artifact equals to the last attempted revision,
-			// we should not make a request for this Kustomization
+			// we should not make a request for this CueBuild
 			if repo.GetArtifact().Revision == d.Status.LastAttemptedRevision {
 				continue
 			}
@@ -70,11 +70,11 @@ func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) f
 	}
 }
 
-func (r *KustomizationReconciler) indexBy(kind string) func(o client.Object) []string {
+func (r *CueBuildReconciler) indexBy(kind string) func(o client.Object) []string {
 	return func(o client.Object) []string {
-		k, ok := o.(*kustomizev1.Kustomization)
+		k, ok := o.(*cuebuildv1.CueBuild)
 		if !ok {
-			panic(fmt.Sprintf("Expected a Kustomization, got %T", o))
+			panic(fmt.Sprintf("Expected a CueBuild, got %T", o))
 		}
 
 		if k.Spec.SourceRef.Kind == kind {

@@ -30,44 +30,44 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
 
-type KustomizeImpersonation struct {
-	workdir       string
-	kustomization kustomizev1.Kustomization
-	statusPoller  *polling.StatusPoller
+type CueBuildImpersonation struct {
+	workdir      string
+	cueBuild     cuebuildv1.CueBuild
+	statusPoller *polling.StatusPoller
 	client.Client
 }
 
-func NewKustomizeImpersonation(
-	kustomization kustomizev1.Kustomization,
+func NewCueBuildImpersonation(
+	cueBuild cuebuildv1.CueBuild,
 	kubeClient client.Client,
 	statusPoller *polling.StatusPoller,
-	workdir string) *KustomizeImpersonation {
-	return &KustomizeImpersonation{
-		workdir:       workdir,
-		kustomization: kustomization,
-		statusPoller:  statusPoller,
-		Client:        kubeClient,
+	workdir string) *CueBuildImpersonation {
+	return &CueBuildImpersonation{
+		workdir:      workdir,
+		cueBuild:     cueBuild,
+		statusPoller: statusPoller,
+		Client:       kubeClient,
 	}
 }
 
-func (ki *KustomizeImpersonation) GetServiceAccountToken(ctx context.Context) (string, error) {
+func (cbi *CueBuildImpersonation) GetServiceAccountToken(ctx context.Context) (string, error) {
 	namespacedName := types.NamespacedName{
-		Namespace: ki.kustomization.Namespace,
-		Name:      ki.kustomization.Spec.ServiceAccountName,
+		Namespace: cbi.cueBuild.Namespace,
+		Name:      cbi.cueBuild.Spec.ServiceAccountName,
 	}
 
 	var serviceAccount corev1.ServiceAccount
-	err := ki.Client.Get(ctx, namespacedName, &serviceAccount)
+	err := cbi.Client.Get(ctx, namespacedName, &serviceAccount)
 	if err != nil {
 		return "", err
 	}
 
 	secretName := types.NamespacedName{
-		Namespace: ki.kustomization.Namespace,
-		Name:      ki.kustomization.Spec.ServiceAccountName,
+		Namespace: cbi.cueBuild.Namespace,
+		Name:      cbi.cueBuild.Spec.ServiceAccountName,
 	}
 
 	for _, secret := range serviceAccount.Secrets {
@@ -78,7 +78,7 @@ func (ki *KustomizeImpersonation) GetServiceAccountToken(ctx context.Context) (s
 	}
 
 	var secret corev1.Secret
-	err = ki.Client.Get(ctx, secretName, &secret)
+	err = cbi.Client.Get(ctx, secretName, &secret)
 	if err != nil {
 		return "", err
 	}
@@ -98,19 +98,19 @@ func (ki *KustomizeImpersonation) GetServiceAccountToken(ctx context.Context) (s
 // If ServiceAccountName is set, will use the cluster provided kubeconfig impersonating the SA.
 // If --kubeconfig is set, will use the kubeconfig file at that location.
 // Otherwise will assume running in cluster and use the cluster provided kubeconfig.
-func (ki *KustomizeImpersonation) GetClient(ctx context.Context) (client.Client, *polling.StatusPoller, error) {
-	if ki.kustomization.Spec.KubeConfig == nil {
-		if ki.kustomization.Spec.ServiceAccountName != "" {
-			return ki.clientForServiceAccount(ctx)
+func (cbi *CueBuildImpersonation) GetClient(ctx context.Context) (client.Client, *polling.StatusPoller, error) {
+	if cbi.cueBuild.Spec.KubeConfig == nil {
+		if cbi.cueBuild.Spec.ServiceAccountName != "" {
+			return cbi.clientForServiceAccount(ctx)
 		}
 
-		return ki.Client, ki.statusPoller, nil
+		return cbi.Client, cbi.statusPoller, nil
 	}
-	return ki.clientForKubeConfig(ctx)
+	return cbi.clientForKubeConfig(ctx)
 }
 
-func (ki *KustomizeImpersonation) clientForServiceAccount(ctx context.Context) (client.Client, *polling.StatusPoller, error) {
-	token, err := ki.GetServiceAccountToken(ctx)
+func (cbi *CueBuildImpersonation) clientForServiceAccount(ctx context.Context) (client.Client, *polling.StatusPoller, error) {
+	token, err := cbi.GetServiceAccountToken(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -136,8 +136,8 @@ func (ki *KustomizeImpersonation) clientForServiceAccount(ctx context.Context) (
 
 }
 
-func (ki *KustomizeImpersonation) clientForKubeConfig(ctx context.Context) (client.Client, *polling.StatusPoller, error) {
-	kubeConfigBytes, err := ki.getKubeConfig(ctx)
+func (cbi *CueBuildImpersonation) clientForKubeConfig(ctx context.Context) (client.Client, *polling.StatusPoller, error) {
+	kubeConfigBytes, err := cbi.getKubeConfig(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -162,18 +162,18 @@ func (ki *KustomizeImpersonation) clientForKubeConfig(ctx context.Context) (clie
 	return client, statusPoller, err
 }
 
-func (ki *KustomizeImpersonation) WriteKubeConfig(ctx context.Context) (string, error) {
+func (cbi *CueBuildImpersonation) WriteKubeConfig(ctx context.Context) (string, error) {
 	secretName := types.NamespacedName{
-		Namespace: ki.kustomization.GetNamespace(),
-		Name:      ki.kustomization.Spec.KubeConfig.SecretRef.Name,
+		Namespace: cbi.cueBuild.GetNamespace(),
+		Name:      cbi.cueBuild.Spec.KubeConfig.SecretRef.Name,
 	}
 
-	kubeConfig, err := ki.getKubeConfig(ctx)
+	kubeConfig, err := cbi.getKubeConfig(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	f, err := ioutil.TempFile(ki.workdir, "kubeconfig")
+	f, err := ioutil.TempFile(cbi.workdir, "kubeconfig")
 	defer f.Close()
 	if err != nil {
 		return "", fmt.Errorf("unable to write KubeConfig secret '%s' to storage: %w", secretName.String(), err)
@@ -184,14 +184,14 @@ func (ki *KustomizeImpersonation) WriteKubeConfig(ctx context.Context) (string, 
 	return f.Name(), nil
 }
 
-func (ki *KustomizeImpersonation) getKubeConfig(ctx context.Context) ([]byte, error) {
+func (cbi *CueBuildImpersonation) getKubeConfig(ctx context.Context) ([]byte, error) {
 	secretName := types.NamespacedName{
-		Namespace: ki.kustomization.GetNamespace(),
-		Name:      ki.kustomization.Spec.KubeConfig.SecretRef.Name,
+		Namespace: cbi.cueBuild.GetNamespace(),
+		Name:      cbi.cueBuild.Spec.KubeConfig.SecretRef.Name,
 	}
 
 	var secret corev1.Secret
-	if err := ki.Get(ctx, secretName, &secret); err != nil {
+	if err := cbi.Get(ctx, secretName, &secret); err != nil {
 		return nil, fmt.Errorf("unable to read KubeConfig secret '%s' error: %w", secretName.String(), err)
 	}
 

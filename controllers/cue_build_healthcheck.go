@@ -31,28 +31,28 @@ import (
 	"sigs.k8s.io/cli-utils/pkg/kstatus/status"
 	"sigs.k8s.io/cli-utils/pkg/object"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
 
-type KustomizeHealthCheck struct {
-	kustomization kustomizev1.Kustomization
-	statusPoller  *polling.StatusPoller
+type CueBuildHealthCheck struct {
+	cueBuild     cuebuildv1.CueBuild
+	statusPoller *polling.StatusPoller
 }
 
-func NewHealthCheck(kustomization kustomizev1.Kustomization, statusPoller *polling.StatusPoller) *KustomizeHealthCheck {
-	return &KustomizeHealthCheck{
-		kustomization: kustomization,
-		statusPoller:  statusPoller,
+func NewHealthCheck(cueBuild cuebuildv1.CueBuild, statusPoller *polling.StatusPoller) *CueBuildHealthCheck {
+	return &CueBuildHealthCheck{
+		cueBuild:     cueBuild,
+		statusPoller: statusPoller,
 	}
 }
 
-func (hc *KustomizeHealthCheck) Assess(pollInterval time.Duration) error {
-	objMetadata, err := hc.toObjMetadata(hc.kustomization.Spec.HealthChecks)
+func (hc *CueBuildHealthCheck) Assess(pollInterval time.Duration) error {
+	objMetadata, err := hc.toObjMetadata(hc.cueBuild.Spec.HealthChecks)
 	if err != nil {
 		return err
 	}
 
-	timeout := hc.kustomization.GetTimeout() + (time.Second * 1)
+	timeout := hc.cueBuild.GetTimeout() + (time.Second * 1)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -94,7 +94,7 @@ func (hc *KustomizeHealthCheck) Assess(pollInterval time.Duration) error {
 	return nil
 }
 
-func (hc *KustomizeHealthCheck) toObjMetadata(cr []meta.NamespacedObjectKindReference) ([]object.ObjMetadata, error) {
+func (hc *CueBuildHealthCheck) toObjMetadata(cr []meta.NamespacedObjectKindReference) ([]object.ObjMetadata, error) {
 	oo := []object.ObjMetadata{}
 	for _, c := range cr {
 		// For backwards compatibility
@@ -118,6 +118,6 @@ func (hc *KustomizeHealthCheck) toObjMetadata(cr []meta.NamespacedObjectKindRefe
 	return oo, nil
 }
 
-func (hc *KustomizeHealthCheck) objMetadataToString(om object.ObjMetadata) string {
+func (hc *CueBuildHealthCheck) objMetadataToString(om object.ObjMetadata) string {
 	return fmt.Sprintf("%s '%s/%s'", om.GroupKind.Kind, om.Namespace, om.Name)
 }

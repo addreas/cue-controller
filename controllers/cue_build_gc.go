@@ -26,18 +26,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
 )
 
-type KustomizeGarbageCollector struct {
-	snapshot    kustomizev1.Snapshot
+type CueBuildGarbageCollector struct {
+	snapshot    cuebuildv1.Snapshot
 	newChecksum string
 	log         logr.Logger
 	client.Client
 }
 
-func NewGarbageCollector(kubeClient client.Client, snapshot kustomizev1.Snapshot, newChecksum string, log logr.Logger) *KustomizeGarbageCollector {
-	return &KustomizeGarbageCollector{
+func NewGarbageCollector(kubeClient client.Client, snapshot cuebuildv1.Snapshot, newChecksum string, log logr.Logger) *CueBuildGarbageCollector {
+	return &CueBuildGarbageCollector{
 		Client:      kubeClient,
 		snapshot:    snapshot,
 		newChecksum: newChecksum,
@@ -51,7 +51,7 @@ func NewGarbageCollector(kubeClient client.Client, snapshot kustomizev1.Snapshot
 // a label selector that contains the previously applied revision.
 // The garbage collector ignores objects that are no longer present
 // on the cluster or if they are marked for deleting using Kubernetes finalizers.
-func (kgc *KustomizeGarbageCollector) Prune(timeout time.Duration, name string, namespace string) (string, bool) {
+func (kgc *CueBuildGarbageCollector) Prune(timeout time.Duration, name string, namespace string) (string, bool) {
 	changeSet := ""
 	outErr := ""
 
@@ -137,32 +137,32 @@ func (kgc *KustomizeGarbageCollector) Prune(timeout time.Duration, name string, 
 	return changeSet, true
 }
 
-func (kgc *KustomizeGarbageCollector) isStale(obj unstructured.Unstructured) bool {
-	itemChecksum := obj.GetLabels()[fmt.Sprintf("%s/checksum", kustomizev1.GroupVersion.Group)]
+func (kgc *CueBuildGarbageCollector) isStale(obj unstructured.Unstructured) bool {
+	itemChecksum := obj.GetLabels()[fmt.Sprintf("%s/checksum", cuebuildv1.GroupVersion.Group)]
 	return kgc.newChecksum == "" || itemChecksum != kgc.newChecksum
 }
 
-func (kgc *KustomizeGarbageCollector) shouldSkip(obj unstructured.Unstructured) bool {
-	key := fmt.Sprintf("%s/prune", kustomizev1.GroupVersion.Group)
+func (kgc *CueBuildGarbageCollector) shouldSkip(obj unstructured.Unstructured) bool {
+	key := fmt.Sprintf("%s/prune", cuebuildv1.GroupVersion.Group)
 
-	return obj.GetLabels()[key] == kustomizev1.DisabledValue || obj.GetAnnotations()[key] == kustomizev1.DisabledValue
+	return obj.GetLabels()[key] == cuebuildv1.DisabledValue || obj.GetAnnotations()[key] == cuebuildv1.DisabledValue
 }
 
-func (kgc *KustomizeGarbageCollector) matchingLabels(name, namespace string) client.MatchingLabels {
+func (kgc *CueBuildGarbageCollector) matchingLabels(name, namespace string) client.MatchingLabels {
 	return selectorLabels(name, namespace)
 }
 
 func gcLabels(name, namespace, checksum string) map[string]string {
 	return map[string]string{
-		fmt.Sprintf("%s/name", kustomizev1.GroupVersion.Group):      name,
-		fmt.Sprintf("%s/namespace", kustomizev1.GroupVersion.Group): namespace,
-		fmt.Sprintf("%s/checksum", kustomizev1.GroupVersion.Group):  checksum,
+		fmt.Sprintf("%s/name", cuebuildv1.GroupVersion.Group):      name,
+		fmt.Sprintf("%s/namespace", cuebuildv1.GroupVersion.Group): namespace,
+		fmt.Sprintf("%s/checksum", cuebuildv1.GroupVersion.Group):  checksum,
 	}
 }
 
 func selectorLabels(name, namespace string) map[string]string {
 	return map[string]string{
-		fmt.Sprintf("%s/name", kustomizev1.GroupVersion.Group):      name,
-		fmt.Sprintf("%s/namespace", kustomizev1.GroupVersion.Group): namespace,
+		fmt.Sprintf("%s/name", cuebuildv1.GroupVersion.Group):      name,
+		fmt.Sprintf("%s/namespace", cuebuildv1.GroupVersion.Group): namespace,
 	}
 }
