@@ -38,12 +38,12 @@ import (
 	"github.com/fluxcd/pkg/runtime/probes"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
-	"github.com/fluxcd/kustomize-controller/controllers"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
+	"github.com/addreas/cuebuild-controller/controllers"
 	// +kubebuilder:scaffold:imports
 )
 
-const controllerName = "kustomize-controller"
+const controllerName = "cuebuild-controller"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -54,7 +54,7 @@ func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 
 	_ = sourcev1.AddToScheme(scheme)
-	_ = kustomizev1.AddToScheme(scheme)
+	_ = cuebuildv1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -75,7 +75,7 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&eventsAddr, "events-addr", "", "The address of the events receiver.")
 	flag.StringVar(&healthAddr, "health-addr", ":9440", "The address the health endpoint binds to.")
-	flag.IntVar(&concurrent, "concurrent", 4, "The number of concurrent kustomize reconciles.")
+	flag.IntVar(&concurrent, "concurrent", 1, "The number of concurrent CueBuild reconciles.")
 	flag.DurationVar(&requeueDependency, "requeue-dependency", 30*time.Second, "The interval at which failing dependencies are reevaluated.")
 	flag.BoolVar(&watchAllNamespaces, "watch-all-namespaces", true,
 		"Watch for custom resources in all namespaces, if set to false it will only watch the runtime namespace.")
@@ -128,19 +128,19 @@ func main() {
 	probes.SetupChecks(mgr, setupLog)
 	pprof.SetupHandlers(mgr, setupLog)
 
-	if err = (&controllers.KustomizationReconciler{
+	if err = (&controllers.CueBuildReconciler{
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
 		EventRecorder:         mgr.GetEventRecorderFor(controllerName),
 		ExternalEventRecorder: eventRecorder,
 		MetricsRecorder:       metricsRecorder,
 		StatusPoller:          polling.NewStatusPoller(mgr.GetClient(), mgr.GetRESTMapper()),
-	}).SetupWithManager(mgr, controllers.KustomizationReconcilerOptions{
+	}).SetupWithManager(mgr, controllers.CueBuildReconcilerOptions{
 		MaxConcurrentReconciles:   concurrent,
 		DependencyRequeueInterval: requeueDependency,
 		HTTPRetry:                 httpRetry,
 	}); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", kustomizev1.KustomizationKind)
+		setupLog.Error(err, "unable to create controller", "controller", cuebuildv1.CueBuildKind)
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

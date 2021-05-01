@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= fluxcd/kustomize-controller:latest
+IMG ?= ghcr.io/addreas/cuebuild-controller:latest
 # Produce CRDs that work back to Kubernetes 1.16
 CRD_OPTIONS ?= crd:crdVersions=v1
 SOURCE_VER ?= v0.12.1
@@ -41,20 +41,20 @@ uninstall: manifests
 
 # Deploy controller in the configured Kubernetes cluster in ~/.kube/config
 deploy: manifests
-	cd config/manager && kustomize edit set image fluxcd/kustomize-controller=${IMG}
+	cd config/manager && kustomize edit set image ghcr.io/addreas/cuebuild-controller=${IMG}
 	kustomize build config/default | kubectl apply -f -
 
 # Deploy controller dev image in the configured Kubernetes cluster in ~/.kube/config
 dev-deploy: manifests
 	mkdir -p config/dev && cp config/default/* config/dev
-	cd config/dev && kustomize edit set image fluxcd/kustomize-controller=${IMG}
+	cd config/dev && kustomize edit set image ghcr.io/addreas/cuebuild-controller=${IMG}
 	kustomize build config/dev | kubectl apply -f -
 	rm -rf config/dev
 
 # Delete dev deployment and CRDs
 dev-cleanup: manifests
 	mkdir -p config/dev && cp config/default/* config/dev
-	cd config/dev && kustomize edit set image fluxcd/kustomize-controller=${IMG}
+	cd config/dev && kustomize edit set image ghcr.io/addreas/cuebuild-controller=${IMG}
 	kustomize build config/dev | kubectl delete -f -
 	rm -rf config/dev
 
@@ -65,7 +65,7 @@ manifests: controller-gen
 
 # Generate API reference documentation
 api-docs: gen-crd-api-reference-docs
-	$(API_REF_GEN) -api-dir=./api/v1beta1 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/template -out-file=./docs/api/kustomize.md
+	$(API_REF_GEN) -api-dir=./api/v1alpha1 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/template -out-file=./docs/api/cuebuild.md
 
 # Run go mod tidy
 tidy:
@@ -96,7 +96,7 @@ docker-push:
 
 # Set the docker image in-cluster
 docker-deploy:
-	kubectl -n flux-system set image deployment/kustomize-controller manager=${IMG}
+	kubectl -n flux-system set image deployment/cuebuild-controller manager=${IMG}
 
 # find or download controller-gen
 # download controller-gen if necessary
