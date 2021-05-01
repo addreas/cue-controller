@@ -1,0 +1,14 @@
+apiVersion: cuebuild.toolkit.fluxcd.io/v1alpha1
+kind: CueBuild
+metadata:
+  name: addreas-homelab
+spec:
+  interval: 5m
+  packages:
+  - ./resources/default
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: addreas-homelab
+  validation: client
+  timeout: 2m

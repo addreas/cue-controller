@@ -23,9 +23,9 @@ rules:
   - list
   - watch
 - apiGroups:
-  - kustomize.toolkit.fluxcd.io
+  - cuebuild.toolkit.fluxcd.io
   resources:
-  - kustomizations
+  - cuebuilds
   verbs:
   - create
   - delete
@@ -35,9 +35,9 @@ rules:
   - update
   - watch
 - apiGroups:
-  - kustomize.toolkit.fluxcd.io
+  - cuebuild.toolkit.fluxcd.io
   resources:
-  - kustomizations/finalizers
+  - cuebuilds/finalizers
   verbs:
   - create
   - delete
@@ -45,9 +45,9 @@ rules:
   - patch
   - update
 - apiGroups:
-  - kustomize.toolkit.fluxcd.io
+  - cuebuild.toolkit.fluxcd.io
   resources:
-  - kustomizations/status
+  - cuebuilds/status
   verbs:
   - get
   - patch
