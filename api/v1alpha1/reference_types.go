@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1beta1
+package v1alpha1
 
 import "fmt"
 
@@ -34,7 +34,7 @@ type CrossNamespaceSourceReference struct {
 	// +required
 	Name string `json:"name"`
 
-	// Namespace of the referent, defaults to the Kustomization namespace
+	// Namespace of the referent, defaults to the CueBuild namespace
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 }

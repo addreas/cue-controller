@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1beta1
+package v1alpha1
 
 const (
 	// HealthyCondition is the condition type used
@@ -22,22 +22,22 @@ const (
 	HealthyCondition string = "Healthy"
 
 	// PruneFailedReason represents the fact that the
-	// pruning of the Kustomization failed.
+	// pruning of the CueBuild failed.
 	PruneFailedReason string = "PruneFailed"
 
 	// ArtifactFailedReason represents the fact that the
-	// artifact download of the kustomization failed.
+	// artifact download of the CueBuild failed.
 	ArtifactFailedReason string = "ArtifactFailed"
 
 	// BuildFailedReason represents the fact that the
-	// kustomize build of the Kustomization failed.
+	// cue export of the CueBuild failed.
 	BuildFailedReason string = "BuildFailed"
 
 	// HealthCheckFailedReason represents the fact that
-	// one of the health checks of the Kustomization failed.
+	// one of the health checks of the CueBuild failed.
 	HealthCheckFailedReason string = "HealthCheckFailed"
 
 	// ValidationFailedReason represents the fact that the
-	// validation of the Kustomization manifests has failed.
+	// validation of the CueBuild manifests has failed.
 	ValidationFailedReason string = "ValidationFailed"
 )
