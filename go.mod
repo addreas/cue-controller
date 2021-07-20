@@ -5,7 +5,7 @@ go 1.15
 replace github.com/addreas/cuebuild-controller/api => ./api
 
 require (
-	cuelang.org/go v0.4.0-alpha.2
+	cuelang.org/go v0.4.0
 	github.com/addreas/cuebuild-controller/api v0.0.0-00010101000000-000000000000
 	github.com/fluxcd/pkg/apis/meta v0.9.0
 	github.com/fluxcd/pkg/runtime v0.11.0
