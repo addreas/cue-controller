@@ -296,9 +296,22 @@ func (r *CueBuildReconciler) reconcile(
 	}
 
 	cuectx := cuecontext.New()
-	values, err := cuectx.BuildInstances(load.Instances(cueBuild.Spec.Packages, &load.Config{
+	instances := load.Instances(cueBuild.Spec.Packages, &load.Config{
 		Dir: tmpDir,
-	}))
+	})
+
+	for _, instance := range instances {
+		if instance.Err != nil {
+			return cuebuildv1.CueBuildNotReady(
+				cueBuild,
+				source.GetArtifact().Revision,
+				cuebuildv1.ValidationFailedReason,
+				err.Error(),
+			), fmt.Errorf("failed to load instance: %s", instance.Err)
+		}
+	}
+
+	values, err := cuectx.BuildInstances(instances)
 
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
@@ -306,7 +319,7 @@ func (r *CueBuildReconciler) reconcile(
 			source.GetArtifact().Revision,
 			cuebuildv1.ValidationFailedReason,
 			err.Error(),
-		), fmt.Errorf("failed to load cue packages: %s", err)
+		), fmt.Errorf("failed to build cue instances: %s", err)
 	}
 
 	// create any necessary kube-clients for impersonation
@@ -496,7 +509,7 @@ func (r *CueBuildReconciler) getSource(ctx context.Context, cueBuild cuebuildv1.
 
 func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueBuild, values []cue.Value, checksum string) ([]byte, error) {
 	timeout := cueBuild.GetTimeout()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	labels := map[string]string{
@@ -508,13 +521,16 @@ func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueB
 	errors := make([]string, 0)
 	resources := bytes.Buffer{}
 	for _, inst := range values {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		inst.Walk(func(v cue.Value) bool {
 			if v.Kind() == cue.StructKind &&
-				v.Lookup("apiVersion").Exists() &&
-				v.Lookup("kind").Exists() &&
-				v.Lookup("metadata", "name").Exists() {
+				v.LookupPath(cue.ParsePath("apiVersion")).Exists() &&
+				v.LookupPath(cue.ParsePath("kind")).Exists() &&
+				v.LookupPath(cue.ParsePath("metadata.name")).Exists() {
 
-				bytes, err := v.Fill(labels, "metadata", "labels").MarshalJSON()
+				bytes, err := v.FillPath(cue.ParsePath("metadata.labels"), labels).MarshalJSON()
 				if err != nil {
 					errors = append(errors, fmt.Sprintf("failed to json marshal: %s", err))
 				}
