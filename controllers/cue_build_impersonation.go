@@ -19,7 +19,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -30,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
-	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha2"
 )
 
 type CueBuildImpersonation struct {
@@ -162,28 +161,6 @@ func (cbi *CueBuildImpersonation) clientForKubeConfig(ctx context.Context) (clie
 	return client, statusPoller, err
 }
 
-func (cbi *CueBuildImpersonation) WriteKubeConfig(ctx context.Context) (string, error) {
-	secretName := types.NamespacedName{
-		Namespace: cbi.cueBuild.GetNamespace(),
-		Name:      cbi.cueBuild.Spec.KubeConfig.SecretRef.Name,
-	}
-
-	kubeConfig, err := cbi.getKubeConfig(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	f, err := ioutil.TempFile(cbi.workdir, "kubeconfig")
-	defer f.Close()
-	if err != nil {
-		return "", fmt.Errorf("unable to write KubeConfig secret '%s' to storage: %w", secretName.String(), err)
-	}
-	if _, err := f.Write(kubeConfig); err != nil {
-		return "", fmt.Errorf("unable to write KubeConfig secret '%s' to storage: %w", secretName.String(), err)
-	}
-	return f.Name(), nil
-}
-
 func (cbi *CueBuildImpersonation) getKubeConfig(ctx context.Context) ([]byte, error) {
 	secretName := types.NamespacedName{
 		Namespace: cbi.cueBuild.GetNamespace(),
@@ -195,8 +172,15 @@ func (cbi *CueBuildImpersonation) getKubeConfig(ctx context.Context) ([]byte, er
 		return nil, fmt.Errorf("unable to read KubeConfig secret '%s' error: %w", secretName.String(), err)
 	}
 
-	kubeConfig, ok := secret.Data["value"]
-	if !ok {
+	var kubeConfig []byte
+	for k, _ := range secret.Data {
+		if k == "value" || k == "value.yaml" {
+			kubeConfig = secret.Data[k]
+			break
+		}
+	}
+
+	if len(kubeConfig) == 0 {
 		return nil, fmt.Errorf("KubeConfig secret '%s' doesn't contain a 'value' key ", secretName.String())
 	}
 

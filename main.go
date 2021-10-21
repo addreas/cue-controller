@@ -38,7 +38,7 @@ import (
 	"github.com/fluxcd/pkg/runtime/probes"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 
-	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha2"
 	"github.com/addreas/cuebuild-controller/controllers"
 	// +kubebuilder:scaffold:imports
 )
@@ -129,6 +129,7 @@ func main() {
 	pprof.SetupHandlers(mgr, setupLog)
 
 	if err = (&controllers.CueBuildReconciler{
+		ControllerName:        controllerName,
 		Client:                mgr.GetClient(),
 		Scheme:                mgr.GetScheme(),
 		EventRecorder:         mgr.GetEventRecorderFor(controllerName),
@@ -140,7 +141,7 @@ func main() {
 		DependencyRequeueInterval: requeueDependency,
 		HTTPRetry:                 httpRetry,
 	}); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", cuebuildv1.CueBuildKind)
+		setupLog.Error(err, "unable to create controller", "controller", controllerName)
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

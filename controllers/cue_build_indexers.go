@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha1"
+	cuebuildv1 "github.com/addreas/cuebuild-controller/api/v1alpha2"
 	"github.com/fluxcd/pkg/runtime/dependency"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 )
@@ -44,7 +44,7 @@ func (r *CueBuildReconciler) requestsForRevisionChangeOf(indexKey string) func(o
 		ctx := context.Background()
 		var list cuebuildv1.CueBuildList
 		if err := r.List(ctx, &list, client.MatchingFields{
-			indexKey: ObjectKey(obj).String(),
+			indexKey: client.ObjectKeyFromObject(obj).String(),
 		}); err != nil {
 			return nil
 		}

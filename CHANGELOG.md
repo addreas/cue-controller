@@ -2,6 +2,278 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.16.0
+
+**Release date:** 2021-10-19
+
+This prerelease comes with support for SOPS encrypted `.env` files used in kustomize secret generator.
+
+Improvements:
+* SOPS: Decrypt dotenv files used in kustomize secret generator
+  [#463](https://github.com/fluxcd/kustomize-controller/pull/463)
+* SOPS: Document dotenv secret generator
+  [#469](https://github.com/fluxcd/kustomize-controller/pull/469)
+
+Fixes:
+* Fix cluster scope detection of applied objects
+  [#465](https://github.com/fluxcd/kustomize-controller/pull/465)
+
+## 0.15.5
+
+**Release date:** 2021-10-13
+
+This prerelease comes with improvements to drift detection of Kubernetes custom resources.
+
+Improvements:
+* Improve drift detection
+  [#459](https://github.com/fluxcd/kustomize-controller/pull/459)
+
+## 0.15.4
+
+**Release date:** 2021-10-12
+
+This prerelease comes with fixes to HPA and Service objects validation.
+
+Fixes:
+* Fix Service and HPA v2beta1 validation
+  [#455](https://github.com/fluxcd/kustomize-controller/pull/455)
+
+## 0.15.3
+
+**Release date:** 2021-10-11
+
+This prerelease comes with fixes for drift detection in Secrets and ConfigMaps.
+
+Fixes:
+* Fix drift detection in Secrets and ConfigMaps
+  [#451](https://github.com/fluxcd/kustomize-controller/pull/451)
+
+## 0.15.2
+
+**Release date:** 2021-10-10
+
+This prerelease comes with fixes for server-side apply upstream bugs affecting Kubernetes < 1.22.
+
+Fixes:
+* Fix SSA upstream bugs for Kubernetes < 1.22
+  [#448](https://github.com/fluxcd/kustomize-controller/pull/448)
+
+## 0.15.1
+
+**Release date:** 2021-10-08
+
+This prerelease comes with fixes to backwards compatibility with Flux CLI 0.17 and older.
+
+Fixes:
+* Fix inventory panic for v1beta1 objects
+  [#445](https://github.com/fluxcd/kustomize-controller/pull/445)
+
+## 0.15.0
+
+**Release date:** 2021-10-08
+
+This prerelease comes with a [new reconciler](https://github.com/fluxcd/kustomize-controller/pull/426)
+based on Kubernetes server-side apply and graduates the API to `v1beta2`.
+
+The controller dependencies has been updated to match
+kustomize [v4.4.0](https://github.com/kubernetes-sigs/kustomize/releases/tag/kustomize%2Fv4.4.0)
+which restores the usage of YAML anchors.
+
+**Breaking changes**
+
+- Namespaced objects must contain `metadata.namespace`, defaulting to the `default` namespace is no longer supported.
+  Setting a namespace for all objects reconciled by a Kustomization can be done with `spec.targetNamespace`.
+- The logs, events and alerts that report Kubernetes namespaced object changes are
+  now using the `Kind/Namespace/Name` format instead of `Kind/Name`.
+- The minimum required version of Kubernetes has changed to:
+
+    | Kubernetes version | Minimum required |
+    | --- | --- |
+    | `v1.16` | `>= 1.16.11` |
+    | `v1.17` | `>= 1.17.7` |
+    | `v1.18` | `>= 1.18.4` |
+    | `v1.19` and later | `>= 1.19.0` |
+
+**Features and Improvements**
+
+- Being able to validate and reconcile sources that contain both CRDs and CRs.
+- Being able to wait for all the applied resources to become ready
+  without requiring users to fill-in the health check list.
+- Improve performance (CPU, memory, network, FD usage) and reduce the number of calls to Kubernetes API
+  by replacing kubectl execs with a specialized applier written in Go.
+- Detect and report drift between the desired state (git, s3, etc) and cluster state reliably.
+- Improve the overall observably of the reconciliation process by reporting in real-time
+  the garbage collection and health assessment actions.
+- Reconcile empty sources including pruning of all the resources previously applied.
+- Mask secrets data in logs, events and alerts.
+
+**API changes**
+
+The `kustomize.toolkit.fluxcd.io/v1beta2` API is backwards compatible with `v1beta1`.
+
+Additions, deprecations and removals:
+- `.spec.patchesStrategicMerge` deprecated in favour of `.spec.patches`
+- `.spec.patchesJson6902` deprecated in favour of `.spec.patches`
+- `.spec.validation` deprecated and no longer used (server-side validation is implicit)
+- `.spec.wait` added (when enabled, will wait for all the reconciled resources to become ready)
+- `.status.snapshot` replaced by `.status.inventory`
+
+Updating the manifests in Git to `v1beta2` can be done at any time after the kustomize-controller upgrade.
+All users are encouraged to update the manifests as the deprecated fields
+will be removed when the next API version will be released.
+
+## 0.14.1
+
+**Release date:** 2021-09-09
+
+This prerelease comes with improvements to logging.
+When Kubernetes Secrets can't be reconciled due to validation errors,
+the controller will mask the secret data from logs and events to prevent
+disclosing sensitive information.
+
+Improvements:
+* Mask the Kubernetes Secrets data from dry-run and apply logs
+  [#420](https://github.com/fluxcd/kustomize-controller/pull/420)
+
+## 0.14.0
+
+**Release date:** 2021-08-26
+
+This prerelease comes with improvements to garbage collection.
+When pruning is enabled, the controller will skip the deletion of objects with
+[ownerReference.BlockOwnerDeletion=true](https://v1-18.docs.kubernetes.io/docs/concepts/workloads/controllers/garbage-collection/#controlling-how-the-garbage-collector-deletes-dependents),
+as they are subject to Kubernetes GC.
+
+The controller dependencies has been updated to match
+kustomize [v4.3.0](https://github.com/kubernetes-sigs/kustomize/releases/tag/kustomize%2Fv4.3.0).
+
+Improvements:
+* Update controller to kustomize v4.3.0
+  [#416](https://github.com/fluxcd/kustomize-controller/pull/416)
+* Skip garbage collection of objects with owner references
+  [#411](https://github.com/fluxcd/kustomize-controller/pull/411)
+* Add tests for various kustomize transformers
+  [#408](https://github.com/fluxcd/kustomize-controller/pull/408)
+
+## 0.13.3
+
+**Release date:** 2021-08-05
+
+This prerelease comes with support for SOPS encrypted kubeconfigs.
+
+Improvements:
+* Make the kubeconfig secrets compatible with SOPS
+  [#400](https://github.com/fluxcd/kustomize-controller/pull/400)
+* Remove old util ObjectKey
+  [#397](https://github.com/fluxcd/kustomize-controller/pull/397)
+* Var substitution opt-in docs
+  [#389](https://github.com/fluxcd/kustomize-controller/pull/389) 
+* Update dependencies
+  [#401](https://github.com/fluxcd/kustomize-controller/pull/401)
+
+Fixes:
+* Prevent nil pointer dereference in health checks
+  [#394](https://github.com/fluxcd/kustomize-controller/pull/394)
+
+## 0.13.2
+
+**Release date:** 2021-07-05
+
+This prerelease comes with improvements to health assessment error reporting.
+
+The controller dependencies has been updated to match
+kustomize [v4.2.0](https://github.com/kubernetes-sigs/kustomize/releases/tag/kustomize%2Fv4.2.0).
+
+Improvements:
+* Make it easier to reason about health check failures
+  [#374](https://github.com/fluxcd/kustomize-controller/pull/374)
+* Update Alpine v3.14 and kubectl v1.21.2
+  [#385](https://github.com/fluxcd/kustomize-controller/pull/385)
+* Update controller to kustomize v4.2.0
+  [#383](https://github.com/fluxcd/kustomize-controller/pull/383)
+
+Fixes:
+* Fix typo in dependency ready log
+  [#384](https://github.com/fluxcd/kustomize-controller/pull/384)
+
+## 0.13.1
+
+**Release date:** 2021-06-30
+
+This prerelease comes with kubectl v1.21.1.
+
+Improvements:
+* Update kubectl to v1.21.1
+  [#381](https://github.com/fluxcd/kustomize-controller/pull/381)
+* e2e: Update Kubernetes to v1.21.1
+  [#380](https://github.com/fluxcd/kustomize-controller/pull/380)
+* Improve test coverage of the `dependsOn` feature
+  [#380](https://github.com/fluxcd/kustomize-controller/pull/380)
+
+## 0.13.0
+
+**Release date:** 2021-06-14
+
+This prerelease brings the controller on a par with **Kustomize v4**.
+The Kubernetes and controller-runtime dependencies have been updated to match the Kubernetes 1.21 release.
+
+The Kustomization API has been extended with support for generic in-line
+[patches](https://github.com/fluxcd/kustomize-controller/blob/v0.13.0/docs/spec/v1beta1/kustomization.md##patches).
+
+Starting with this version, the controller uses an annotation instead of a label
+to keep track of removed manifests from source.
+Please consult the [garbage collection docs](https://github.com/fluxcd/kustomize-controller/blob/v0.13.0/docs/spec/v1beta1/kustomization.md#garbage-collection)
+for more details.
+
+**Breaking changes**:
+* Due to the removal of `hashicorp/go-getter` from Kustomize v4,
+  the set of URLs accepted by Kustomize in the `resources` filed
+  is reduced to only file system paths or values compatible with `git clone`.
+  This means you can no longer use resources from archives (zip, tgz, etc).
+* YAML anchors are no longer supported in Kustomize v4,
+  see [kustomize/issues/3675](https://github.com/kubernetes-sigs/kustomize/issues/3675)
+  for more details. 
+* Due to a [bug](https://github.com/kubernetes-sigs/kustomize/issues/3446)
+  in Kustomize v4, if you have **non-string keys** in your manifests,
+  the controller will fail with `json: unsupported type` error.
+ 
+Features:
+* Add support for in-line generic patches to Flux Kustomization API
+  [#364](https://github.com/fluxcd/kustomize-controller/pull/364)
+
+Improvements:
+* Upgrade controller to Kustomize v4
+  [#343](https://github.com/fluxcd/kustomize-controller/pull/343)
+* Move the GC checksum from labels to annotations
+  [#362](https://github.com/fluxcd/kustomize-controller/pull/362)
+
+## 0.12.2
+
+**Release date:** 2021-06-02
+
+This prerelease comes with support for decrypting any file format used with
+[Kustomize `secretGenerator`](https://github.com/fluxcd/kustomize-controller/blob/v0.12.2/docs/spec/v1beta1/kustomization.md#kustomize-secretgenerator).
+
+Improvements:
+* Support decrypting any file format in secret generator
+  [#353](https://github.com/fluxcd/kustomize-controller/pull/353)
+
+## 0.12.1
+
+**Release date:** 2021-05-26
+
+This prerelease comes with a fix to the reconciliation timeout handling.
+
+Improvements:
+* Update Go to v1.16
+  [#350](https://github.com/fluxcd/kustomize-controller/pull/350)
+* Publish on-demand release candidates container images
+  [#342](https://github.com/fluxcd/kustomize-controller/pull/342)
+
+Fixes:
+* Fix validation and application timeout handling
+  [#346](https://github.com/fluxcd/kustomize-controller/pull/346)
+
 ## 0.12.0
 
 **Release date:** 2021-04-29

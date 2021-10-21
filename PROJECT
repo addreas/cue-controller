@@ -3,5 +3,8 @@ repo: github.com/addreas/cuebuild-controller
 resources:
 - group: cuebuild
   kind: CueBuild
+  version: v1alpha2
+- group: cuebuild
+  kind: CueBuild
   version: v1alpha1
-version: "1"
+version: "2"

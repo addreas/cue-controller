@@ -51,22 +51,16 @@ type KustomizationSpec struct {
 	// +required
 	Prune bool `json:"prune"`
 
-	// A list of resources to be included in the health assessment.
+	// Force instructs the controller to recreate resources
+	// when patching fails due to an immutable field change.
+	// +kubebuilder:default:=false
 	// +optional
-	HealthChecks []meta.NamespacedObjectKindReference `json:"healthChecks,omitempty"`
-
+	Force bool `json:"force,omitempty"`
+	
 	// Strategic merge and JSON patches, defined as inline YAML objects,
 	// capable of targeting objects based on kind, label and annotation selectors.
 	// +optional
 	Patches []kustomize.Patch `json:"patches,omitempty"`
-
-	// Strategic merge patches, defined as inline YAML objects.
-	// +optional
-	PatchesStrategicMerge []apiextensionsv1.JSON `json:"patchesStrategicMerge,omitempty"`
-
-	// JSON 6902 patches, defined as inline YAML objects.
-	// +optional
-	PatchesJSON6902 []kustomize.JSON6902Patch `json:"patchesJson6902,omitempty"`
 
 	// Images is a list of (image name, new name, new tag or digest)
 	// for changing image names, tags or digests. This can also be achieved with a
@@ -93,22 +87,19 @@ type KustomizationSpec struct {
 	// +optional
 	TargetNamespace string `json:"targetNamespace,omitempty"`
 
-	// Timeout for validation, apply and health checking operations.
+	// Timeout for apply and health checking operations.
 	// Defaults to 'Interval' duration.
 	// +optional
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
-
-	// Validate the Kubernetes objects before applying them on the cluster.
-	// The validation strategy can be 'client' (local dry-run), 'server' (APIServer dry-run) or 'none'.
-	// +kubebuilder:validation:Enum=none;client;server
+	
+	// A list of resources to be included in the health assessment.
 	// +optional
-	Validation string `json:"validation,omitempty"`
+	HealthChecks []meta.NamespacedObjectKindReference `json:"healthChecks,omitempty"`
 
-	// Force instructs the controller to recreate resources
-	// when patching fails due to an immutable field change.
-	// +kubebuilder:default:=false
+	// Wait instructs the controller to check the health of all the reconciled resources.
+	// When enabled, the HealthChecks are ignored. Defaults to false.
 	// +optional
-	Force bool `json:"force,omitempty"`
+	Wait bool `json:"wait,omitempty"`
 }
 ```
 
@@ -142,24 +133,6 @@ type KubeConfig struct {
 	// the Kustomization.
 	// +required
 	SecretRef meta.LocalObjectReference `json:"secretRef,omitempty"`
-}
-```
-
-Image contains the name, new name and new tag that will replace the original container image:
-
-```go
-type Image struct {
-	// Name of the image to be replaced.
-	// +required
-	Name string `json:"name"`
-
-	// NewName is the name of the image used to replace the original one.
-	// +required
-	NewName string `json:"newName"`
-	
-	// NewTag is the image tag used to replace the original tag.
-	// +required
-	NewTag string `json:"newTag"`
 }
 ```
 
@@ -210,9 +183,10 @@ type KustomizationStatus struct {
 	// +optional
 	LastHandledReconcileAt string `json:"lastHandledReconcileAt,omitempty"`
 
-	// The last successfully applied revision metadata.
+	// Inventory contains the list of Kubernetes resource object references
+	// that have been successfully applied.
 	// +optional
-	Snapshot *Snapshot `json:"snapshot"`
+	Inventory *ResourceInventory `json:"inventory,omitempty"`
 }
 ```
 
@@ -223,6 +197,10 @@ const (
 	// ReadyCondition is the name of the condition that
 	// records the readiness status of a Kustomization.
 	ReadyCondition string = "Ready"
+
+	// HealthyCondition is the condition type used
+	// to record the last health assessment result.
+	HealthyCondition string = "Healthy"
 )
 ```
 
@@ -261,10 +239,6 @@ const (
 	// HealthCheckFailedReason represents the fact that
 	// one of the health checks of the Kustomization failed.
 	HealthCheckFailedReason string = "HealthCheckFailed"
-
-	// ValidationFailedReason represents the fact that the
-	// validation of the Kustomization manifests has failed.
-	ValidationFailedReason string = "ValidationFailed"
 )
 ```
 
@@ -272,13 +246,13 @@ const (
 
 The Kustomization `spec.sourceRef` is a reference to an object managed by
 [source-controller](https://github.com/fluxcd/source-controller). When the source
-[revision](https://github.com/fluxcd/source-controller/blob/master/docs/spec/v1beta1/common.md#source-status)
+[revision](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1beta1/common.md#source-status)
 changes, it generates a Kubernetes event that triggers a kustomize build and apply.
 
 Source supported types:
 
-* [GitRepository](https://github.com/fluxcd/source-controller/blob/master/docs/spec/v1beta1/gitrepositories.md)
-* [Bucket](https://github.com/fluxcd/source-controller/blob/master/docs/spec/v1beta1/buckets.md)
+* [GitRepository](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1beta1/gitrepositories.md)
+* [Bucket](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1beta1/buckets.md)
 
 > **Note** that the source should contain the kustomization.yaml and all the
 > Kubernetes manifests and configuration files referenced in the kustomization.yaml.
@@ -328,7 +302,7 @@ kustomize build | kubeval --ignore-missing-schemas
 
 The Kustomization `spec.interval` tells the controller at which interval to fetch the
 Kubernetes manifest for the source, build the Kustomization and apply it on the cluster.
-The interval time units are `s`, `m` and `h` e.g. `interval: 5m`, the minimum value should be over 60 seconds.
+The interval time units are `s` and `m` e.g. `interval: 5m`, the minimum value should be over 60 seconds.
 
 The Kustomization execution can be suspended by setting `spec.suspend` to `true`.
 
@@ -369,19 +343,10 @@ but are missing from the current source revision, are removed from cluster autom
 Garbage collection is also performed when a Kustomization object is deleted,
 triggering a removal of all Kubernetes objects previously applied on the cluster.
 
-To keep track of the Kubernetes objects reconciled from a Kustomization, the following metadata 
-is injected into the manifests:
-
-```yaml
-labels:
-  kustomize.toolkit.fluxcd.io/name: "<Kustomization name>"
-  kustomize.toolkit.fluxcd.io/namespace: "<Kustomization namespace>"
-annotations:
-  kustomize.toolkit.fluxcd.io/checksum: "<manifests checksum>"
-```
-
-The checksum annotation value is updated if the content of `spec.path` changes.
-When pruning is disabled, the checksum annotation is omitted. 
+To keep track of the Kubernetes objects reconciled from a Kustomization, the controller
+creates an inventory of the last applied resources. The inventory records are in the
+format `<namespace>_<name>_<group>_<kind>_<version>` and they are stored in-cluster
+under `.status.inventory.entries`.
 
 You can disable pruning for certain resources by either
 labeling or annotating them with:
@@ -390,14 +355,33 @@ labeling or annotating them with:
 kustomize.toolkit.fluxcd.io/prune: disabled
 ```
 
-Note that Kubernetes objects generated by other controllers that have `ownerReference.blockOwnerDeletion=true`
-are skipped from garbage collection.
-
 ## Health assessment
 
 A Kustomization can contain a series of health checks used to determine the
 [rollout status](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#deployment-status)
 of the deployed workloads and the ready status of custom resources.
+
+To enabled health checking for all the reconciled resources,
+set `spec.wait` and `spec.timeout`:
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
+kind: Kustomization
+metadata:
+  name: backend
+  namespace: default
+spec:
+  interval: 5m
+  path: "./deploy"
+  sourceRef:
+    kind: GitRepository
+    name: webapp
+  wait: true
+  timeout: 2m
+```
+
+If you wish to select only certain resources, list them under `spec.healthChecks`.
+Note that when `spec.wait` is enabled, the `spec.healthChecks` field is ignored.
 
 A health check entry can reference one of the following types:
 
@@ -409,7 +393,7 @@ Assuming the Kustomization source contains a Kubernetes Deployment named `backen
 a health check can be defined as follows:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: backend
@@ -439,7 +423,7 @@ When a Kustomization contains HelmRelease objects, instead of checking the under
 define a health check that waits for the HelmReleases to be reconciled with:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: webapp
@@ -452,11 +436,11 @@ spec:
     kind: GitRepository
     name: webapp
   healthChecks:
-    - apiVersion: helm.toolkit.fluxcd.io/v1beta1
+    - apiVersion: helm.toolkit.fluxcd.io/v2beta1
       kind: HelmRelease
       name: frontend
       namespace: dev
-    - apiVersion: helm.toolkit.fluxcd.io/v1beta1
+    - apiVersion: helm.toolkit.fluxcd.io/v2beta1
       kind: HelmRelease
       name: backend
       namespace: dev
@@ -484,7 +468,7 @@ Assuming two Kustomizations:
 You can instruct the controller to apply the `cert-manager` Kustomization before `certs`:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: cert-manager
@@ -502,7 +486,7 @@ spec:
       name: cert-manager
       namespace: cert-manager
 ---
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: certs
@@ -579,7 +563,7 @@ subjects:
 Create a Kustomization that prevents altering the cluster state outside of the `webapp` namespace:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: backend
@@ -609,8 +593,6 @@ offering support for the following Kustomize directives:
 
 - [namespace](https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/namespace/)
 - [patches](https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/patches/)
-- [patchesStrategicMerge](https://kubectl.docs.kubernetes.io/references/kustomize/patchesstrategicmerge/)
-- [patchesJson6902](https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/patchesjson6902/)
 - [images](https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/images/)
 
 ### Target namespace
@@ -620,7 +602,7 @@ and overwrite the namespace of all the Kubernetes objects reconciled by the `Kus
 `spec.targetNamespace` can be defined:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: podinfo
@@ -636,12 +618,12 @@ The `targetNamespace` is expected to exist.
 
 To add [Kustomize `patches` entries](https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/patches/)
 to the configuration, and patch resources using either a [strategic merge](https://kubectl.docs.kubernetes.io/references/kustomize/glossary#patchstrategicmerge) 
-patch or a [JSON](https://kubectl.docs.kubernetes.io/references/kustomize/glossary#patchjson6902) patch,
+patch or a [JSON6902](https://kubectl.docs.kubernetes.io/references/kustomize/glossary#patchjson6902) patch,
 `spec.patches` items must contain a `target` selector and a `patch` document.
 The patch can target a single resource or multiple resources:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: podinfo
@@ -650,65 +632,37 @@ spec:
   # ...omitted for brevity
   patches:
     - patch: |-
-        apiVersion: v1
-        kind: Pod
+        apiVersion: apps/v1
+        kind: Deployment
         metadata:
           name: not-used
-          labels:
-            app.kubernetes.io/part-of: test-app
-      target:
-        labelSelector: "app=podinfo"
-```
-
-### Strategic Merge patches
-
-To add [Kustomize `patchesStrategicMerge` entries](https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/patchesstrategicmerge/)
-to the configuration, `spec.patchesStrategicMerge` can be defined with a list
-of strategic merge patches in YAML format:
-
-```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
-kind: Kustomization
-metadata:
-  name: podinfo
-  namespace: flux-system
-spec:
-  # ...omitted for brevity
-  patchesStrategicMerge:
-  - apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: podinfo
-    spec:
-      template:
         spec:
-          serviceAccount: custom-service-account
-```
-
-### JSON 6902 patches
-
-To add [Kustomize `patchesJson6902` entries](https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/patchesjson6902/)
-to the configuration, and patch resources using the [JSON 6902 standard](https://tools.ietf.org/html/rfc6902),
-`spec.patchesJson6902`, the items must contain a `target` selector and JSON 6902
-`patch` document:
-
-```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
-kind: Kustomization
-metadata:
-  name: podinfo
-  namespace: flux-system
-spec:
-  # ...omitted for brevity
-  patchesJson6902:
-  - target:
-      version: v1
-      kind: Deployment
-      name: podinfo
-    patch:
-    - op: add
-      path: /metadata/annotations/key
-      value: value
+          template:
+            metadata:
+              annotations:
+                cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+      target:
+        kind: Deployment
+        labelSelector: "app.kubernetes.io/part-of=my-app"
+    - patch: |
+        - op: add
+          path: /spec/template/spec/securityContext
+          value:
+            runAsUser: 10000
+            fsGroup: 1337
+        - op: add
+          path: /spec/template/spec/containers/0/securityContext
+          value:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+      target:
+        kind: Deployment
+        name: podinfo
+        namespace: apps
 ```
 
 ### Images
@@ -718,7 +672,7 @@ to the configuration, and overwrite the name, tag or digest of container images
 without creating patches, `spec.images` can be defined:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: podinfo
@@ -774,7 +728,7 @@ You can specify the variables and their values in the Kustomization definition u
 `substitute` and/or `substituteFrom` post build section:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: apps
@@ -811,8 +765,8 @@ from is defined. This may cause issues if you rely on expressions which should e
 default, even if no other variables are configured. To work around this, one can set an
 arbitrary key/value pair to enable the substitution of variables. For example: 
 
-```
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: apps
@@ -884,7 +838,7 @@ spec:
 ---
 # ... unrelated Cluster API objects omitted for brevity ...
 ---
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: cluster-addons
@@ -953,7 +907,7 @@ kubectl -n default create secret generic sops-gpg \
 Configure decryption by referring the private key secret:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: my-secrets
@@ -999,7 +953,7 @@ kubectl -n default create secret generic sops-age \
 Configure decryption by referring the private key secret:
 
 ```yaml
-apiVersion: kustomize.toolkit.fluxcd.io/v1beta1
+apiVersion: kustomize.toolkit.fluxcd.io/v1beta2
 kind: Kustomization
 metadata:
   name: my-secrets
@@ -1039,6 +993,35 @@ Commit and push `token.encrypted` and `kustomization.yaml` to Git.
 The kustomize-controller scans the values of Kubernetes Secrets, and when it 
 detects that the values are SOPS encrypted, it decrypts them before applying 
 them on the cluster.
+
+For secrets in `.json`, `.yaml` and `.env` format, make sure you specify the input type when encrypting them with SOPS:
+
+```sh
+cat config.json | sops -e --input-type=json > config.json.encrypted
+cat config.yaml | sops -e --input-type=yaml > config.yaml.encrypted
+cat config.env | sops -e --input-type=env > config.env.encrypted
+```
+
+For kustomize-controller to be able to decrypt a JSON config, you need to set the file extension to `.json`:
+
+```yaml
+kind: Kustomization
+secretGenerator:
+  - name: config
+    files:
+      - config.json=config.json.encrypted
+```
+
+For dotenv files, use the `envs` directive:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+secretGenerator:
+  - name: config
+    envs:
+      - config.env.encrypted
+```
 
 ## Status
 

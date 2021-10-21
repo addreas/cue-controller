@@ -1,18 +1,15 @@
-FROM golang:1.15-alpine as builder
+ARG XX_VERSION=1.0.0-rc.2
+
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:${XX_VERSION} AS xx
+
+FROM --platform=$BUILDPLATFORM golang:1.16-alpine as builder
+
+# Copy the build utilities.
+COPY --from=xx / /
 
 ARG TARGETPLATFORM
 
 WORKDIR /workspace
-
-RUN apk add --no-cache ca-certificates curl
-
-RUN kubectl_ver=1.21.0 && \
-arch=${TARGETPLATFORM:-linux/amd64} && \
-if [ "$TARGETPLATFORM" == "linux/arm/v7" ]; then arch="linux/arm"; fi && \
-curl -sL https://storage.googleapis.com/kubernetes-release/release/v${kubectl_ver}/bin/${arch}/kubectl \
--o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
-
-RUN kubectl version --client=true
 
 # copy api submodule
 COPY api/ api/
@@ -29,15 +26,15 @@ COPY main.go main.go
 COPY controllers/ controllers/
 
 # build
-RUN CGO_ENABLED=0 go build -a -o cuebuild-controller main.go
+ENV CGO_ENABLED=0
+RUN xx-go build -a -o cuebuild-controller main.go
 
-FROM alpine:3.13
+FROM alpine:3.14
 
 LABEL org.opencontainers.image.source="https://github.com/addreas/cuebuild-controller"
 
 RUN apk add --no-cache ca-certificates tini git openssh-client gnupg
 
-COPY --from=builder /usr/local/bin/kubectl /usr/local/bin/
 COPY --from=builder /workspace/cuebuild-controller /usr/local/bin/
 
 # Create minimal nsswitch.conf file to prioritize the usage of /etc/hosts over DNS queries.
@@ -49,6 +46,5 @@ RUN addgroup -S controller && adduser -S controller -G controller
 USER controller
 
 ENV GNUPGHOME=/tmp
-COPY config/kubeconfig /home/controller/.kube/config
 
 ENTRYPOINT [ "/sbin/tini", "--", "cuebuild-controller" ]

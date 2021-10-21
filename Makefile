@@ -2,7 +2,7 @@
 IMG ?= ghcr.io/addreas/cuebuild-controller:latest
 # Produce CRDs that work back to Kubernetes 1.16
 CRD_OPTIONS ?= crd:crdVersions=v1
-SOURCE_VER ?= v0.12.1
+SOURCE_VER ?= v0.16.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -11,12 +11,23 @@ else
 GOBIN=$(shell go env GOBIN)
 endif
 
+# Allows for defining additional Docker buildx arguments, e.g. '--push'.
+BUILD_ARGS ?=
+# Architectures to build images for.
+BUILD_PLATFORMS ?= linux/amd64
+
 all: manager
 
-# Run tests
-test: generate fmt vet manifests api-docs download-crd-deps
-	go test ./... -coverprofile cover.out
-	cd api; go test ./... -coverprofile cover.out
+# Download the envtest binaries to testbin
+ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
+ENVTEST_KUBERNETES_VERSION?=latest
+install-envtest: setup-envtest
+	$(SETUP_ENVTEST) use $(ENVTEST_KUBERNETES_VERSION) --bin-dir=$(ENVTEST_ASSETS_DIR)
+
+# Run controller tests
+KUBEBUILDER_ASSETS?="$(shell $(SETUP_ENVTEST) use -i $(ENVTEST_KUBERNETES_VERSION) --bin-dir=$(ENVTEST_ASSETS_DIR) -p path)"
+test: generate fmt vet manifests api-docs download-crd-deps install-envtest
+	KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) go test ./controllers/...  -v -coverprofile cover.out
 
 # Build manager binary
 manager: generate fmt vet
@@ -65,7 +76,7 @@ manifests: controller-gen
 
 # Generate API reference documentation
 api-docs: gen-crd-api-reference-docs
-	$(API_REF_GEN) -api-dir=./api/v1alpha1 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/template -out-file=./docs/api/cuebuild.md
+	$(API_REF_GEN) -api-dir=./api/v1alpha2 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/template -out-file=./docs/api/kustomize.md
 
 # Run go mod tidy
 tidy:
@@ -88,7 +99,11 @@ generate: controller-gen
 
 # Build the docker image
 docker-build:
-	docker build . -t ${IMG}
+	docker buildx build \
+	--platform=$(BUILD_PLATFORMS) \
+	-t ${IMG} \
+	--load \
+	${BUILD_ARGS} .
 
 # Push the docker image
 docker-push:
@@ -107,7 +122,7 @@ ifeq (, $(shell which controller-gen))
 	CONTROLLER_GEN_TMP_DIR=$$(mktemp -d) ;\
 	cd $$CONTROLLER_GEN_TMP_DIR ;\
 	go mod init tmp ;\
-	go get sigs.k8s.io/controller-tools/cmd/controller-gen@v0.4.1 ;\
+	go get sigs.k8s.io/controller-tools/cmd/controller-gen@v0.5.0 ;\
 	rm -rf $$CONTROLLER_GEN_TMP_DIR ;\
 	}
 CONTROLLER_GEN=$(GOBIN)/controller-gen
@@ -129,4 +144,19 @@ ifeq (, $(shell which gen-crd-api-reference-docs))
 API_REF_GEN=$(GOBIN)/gen-crd-api-reference-docs
 else
 API_REF_GEN=$(shell which gen-crd-api-reference-docs)
+endif
+
+setup-envtest:
+ifeq (, $(shell which setup-envtest))
+	@{ \
+	set -e ;\
+	SETUP_ENVTEST_TMP_DIR=$$(mktemp -d) ;\
+	cd $$SETUP_ENVTEST_TMP_DIR ;\
+	go mod init tmp ;\
+	go get sigs.k8s.io/controller-runtime/tools/setup-envtest@latest ;\
+	rm -rf $$SETUP_ENVTEST_TMP_DIR ;\
+	}
+SETUP_ENVTEST=$(GOBIN)/setup-envtest
+else
+SETUP_ENVTEST=$(shell which setup-envtest)
 endif

@@ -1,6 +1,6 @@
-# kustomize.toolkit.fluxcd.io/v1alpha1
+# kustomize.toolkit.fluxcd.io/v1beta2
 
-This is the v1alpha1 API specification for defining continuous delivery pipelines
+This is the v1beta2 API specification for defining continuous delivery pipelines
 of Kubernetes objects generated with Kustomize.
 
 ## Specification
@@ -13,6 +13,9 @@ of Kubernetes objects generated with Kustomize.
     + [Health assessment](kustomization.md#health-assessment)
     + [Kustomization dependencies](kustomization.md#kustomization-dependencies)
     + [Role-based access control](kustomization.md#role-based-access-control)
+    + [Override kustomize config](kustomization.md#override-kustomize-config)
+    + [Variable substitution](kustomization.md#variable-substitution)
+    + [Targeting remote clusters](kustomization.md#remote-clusters--cluster-api)
     + [Secrets decryption](kustomization.md#secrets-decryption)
     + [Status](kustomization.md#status)
 
