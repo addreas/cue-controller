@@ -2,6 +2,52 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.18.0
+
+**Release date:** 2021-11-12
+
+This prerelease comes with artifact integrity verification.
+During the acquisition of an artifact, kustomize-controller computes its checksum using SHA-2
+and verifies that it matches the checksum advertised in the `Status` of the Source.
+
+The controller dependencies has been updated to match
+kustomize [v4.4.1](https://github.com/kubernetes-sigs/kustomize/releases/tag/kustomize%2Fv4.4.1).
+
+Improvements:
+* Verify artifacts integrity
+  [#489](https://github.com/fluxcd/kustomize-controller/pull/489)
+* Update controller to kustomize v4.4.1
+  [#488](https://github.com/fluxcd/kustomize-controller/pull/488)
+
+## 0.17.0
+
+**Release date:** 2021-11-09
+
+This prerelease comes with support for ignoring changes made to in-cluster resources
+by annotating them with:
+
+```yaml
+kustomize.toolkit.fluxcd.io/reconcile: disabled
+```
+
+When the `kustomize.toolkit.fluxcd.io/reconcile` annotation is set to `disabled`,
+the controller will no longer apply changes from source, nor will it prune the resource.
+To resume reconciliation, set the annotation to `enabled` or remove it.
+
+Features:
+* Allow disabling the reconciliation of in-cluster resources
+  [#484](https://github.com/fluxcd/kustomize-controller/pull/484)
+
+Fixes:
+* Set delete propagation policy to background
+  [#482](https://github.com/fluxcd/kustomize-controller/pull/482)
+* Warn when secrets are not decrypted before apply
+  [#483](https://github.com/fluxcd/kustomize-controller/pull/483)
+* Remove gopass dependency
+  [#480](https://github.com/fluxcd/kustomize-controller/pull/480)
+* Remove deprecated io/ioutil dependency
+  [#479](https://github.com/fluxcd/kustomize-controller/pull/479)
+
 ## 0.16.0
 
 **Release date:** 2021-10-19

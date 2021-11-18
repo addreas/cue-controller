@@ -19,8 +19,10 @@ package controllers
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -285,7 +287,7 @@ func (r *CueBuildReconciler) reconcile(
 	revision := source.GetArtifact().Revision
 
 	// create tmp dir
-	tmpDir, err := ioutil.TempDir("", cueBuild.Name)
+	tmpDir, err := os.MkdirTemp("", cueBuild.Name)
 	if err != nil {
 		err = fmt.Errorf("tmp dir error: %w", err)
 		return cuebuildv1.CueBuildNotReady(
@@ -298,7 +300,7 @@ func (r *CueBuildReconciler) reconcile(
 	defer os.RemoveAll(tmpDir)
 
 	// download artifact and extract files
-	err = r.download(source.GetArtifact().URL, tmpDir)
+	err = r.download(source.GetArtifact(), tmpDir)
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
 			cueBuild,
@@ -494,7 +496,8 @@ func (r *CueBuildReconciler) checkDependencies(cueBuild cuebuildv1.CueBuild) err
 	return nil
 }
 
-func (r *CueBuildReconciler) download(artifactURL string, tmpDir string) error {
+func (r *CueBuildReconciler) download(artifact *sourcev1.Artifact, tmpDir string) error {
+	artifactURL := artifact.URL
 	if hostname := os.Getenv("SOURCE_CONTROLLER_LOCALHOST"); hostname != "" {
 		u, err := url.Parse(artifactURL)
 		if err != nil {
@@ -520,9 +523,38 @@ func (r *CueBuildReconciler) download(artifactURL string, tmpDir string) error {
 		return fmt.Errorf("failed to download artifact from %s, status: %s", artifactURL, resp.Status)
 	}
 
+	var buf bytes.Buffer
+
+	// verify checksum matches origin
+	if err := r.verifyArtifact(artifact, &buf, resp.Body); err != nil {
+		return err
+	}
+
 	// extract
-	if _, err = untar.Untar(resp.Body, tmpDir); err != nil {
+	if _, err = untar.Untar(&buf, tmpDir); err != nil {
 		return fmt.Errorf("failed to untar artifact, error: %w", err)
+	}
+
+	return nil
+}
+
+func (r *CueBuildReconciler) verifyArtifact(artifact *sourcev1.Artifact, buf *bytes.Buffer, reader io.Reader) error {
+	hasher := sha256.New()
+
+	// for backwards compatibility with source-controller v0.17.2 and older
+	if len(artifact.Checksum) == 40 {
+		hasher = sha1.New()
+	}
+
+	// compute checksum
+	mw := io.MultiWriter(hasher, buf)
+	if _, err := io.Copy(mw, reader); err != nil {
+		return err
+	}
+
+	if checksum := fmt.Sprintf("%x", hasher.Sum(nil)); checksum != artifact.Checksum {
+		return fmt.Errorf("failed to verify artifact: computed checksum '%s' doesn't match advertised '%s'",
+			checksum, artifact.Checksum)
 	}
 
 	return nil
@@ -609,6 +641,12 @@ func (r *CueBuildReconciler) apply(ctx context.Context, manager *ssa.ResourceMan
 		return false, nil, err
 	}
 
+	applyOpts := ssa.DefaultApplyOptions()
+	applyOpts.Force = cueBuild.Spec.Force
+	applyOpts.Exclusions = map[string]string{
+		fmt.Sprintf("%s/reconcile", cuebuildv1.GroupVersion.Group): cuebuildv1.DisabledValue,
+	}
+
 	// contains only CRDs and Namespaces
 	var stageOne []*unstructured.Unstructured
 
@@ -630,7 +668,7 @@ func (r *CueBuildReconciler) apply(ctx context.Context, manager *ssa.ResourceMan
 
 	// validate, apply and wait for CRDs and Namespaces to register
 	if len(stageOne) > 0 {
-		changeSet, err := manager.ApplyAll(ctx, stageOne, cueBuild.Spec.Force)
+		changeSet, err := manager.ApplyAll(ctx, stageOne, applyOpts)
 		if err != nil {
 			return false, nil, err
 		}
@@ -645,7 +683,10 @@ func (r *CueBuildReconciler) apply(ctx context.Context, manager *ssa.ResourceMan
 			}
 		}
 
-		if err := manager.Wait(stageOne, 2*time.Second, cueBuild.GetTimeout()); err != nil {
+		if err := manager.Wait(stageOne, ssa.WaitOptions{
+			Interval: 2 * time.Second,
+			Timeout:  cueBuild.GetTimeout(),
+		}); err != nil {
 			return false, nil, err
 		}
 	}
@@ -653,7 +694,7 @@ func (r *CueBuildReconciler) apply(ctx context.Context, manager *ssa.ResourceMan
 	// sort by kind, validate and apply all the others objects
 	sort.Sort(ssa.SortableUnstructureds(stageTwo))
 	if len(stageTwo) > 0 {
-		changeSet, err := manager.ApplyAll(ctx, stageTwo, cueBuild.Spec.Force)
+		changeSet, err := manager.ApplyAll(ctx, stageTwo, applyOpts)
 		if err != nil {
 			return false, nil, fmt.Errorf("%w\n%s", err, changeSetLog.String())
 		}
@@ -719,7 +760,10 @@ func (r *CueBuildReconciler) checkHealth(ctx context.Context, manager *ssa.Resou
 	}
 
 	// check the health with a default timeout of 30sec shorter than the reconciliation interval
-	if err := manager.WaitForSet(toCheck, time.Second, cueBuild.GetTimeout()); err != nil {
+	if err := manager.WaitForSet(toCheck, ssa.WaitOptions{
+		Interval: 5 * time.Second,
+		Timeout:  cueBuild.GetTimeout(),
+	}); err != nil {
 		return fmt.Errorf("Health check failed after %s, %w", time.Now().Sub(checkStart).String(), err)
 	}
 
@@ -738,12 +782,17 @@ func (r *CueBuildReconciler) prune(ctx context.Context, manager *ssa.ResourceMan
 	}
 
 	log := logr.FromContext(ctx)
-	changeSet, err := manager.DeleteAll(ctx, objects,
-		manager.GetOwnerLabels(cueBuild.Name, cueBuild.Namespace),
-		map[string]string{
-			fmt.Sprintf("%s/prune", cuebuildv1.GroupVersion.Group): cuebuildv1.DisabledValue,
+
+	opts := ssa.DeleteOptions{
+		PropagationPolicy: metav1.DeletePropagationBackground,
+		Inclusions:        manager.GetOwnerLabels(cueBuild.Name, cueBuild.Namespace),
+		Exclusions: map[string]string{
+			fmt.Sprintf("%s/prune", cuebuildv1.GroupVersion.Group):     cuebuildv1.DisabledValue,
+			fmt.Sprintf("%s/reconcile", cuebuildv1.GroupVersion.Group): cuebuildv1.DisabledValue,
 		},
-	)
+	}
+
+	changeSet, err := manager.DeleteAll(ctx, objects, opts)
 	if err != nil {
 		return false, err
 	}
@@ -779,12 +828,16 @@ func (r *CueBuildReconciler) finalize(ctx context.Context, cueBuild cuebuildv1.C
 				Group: cuebuildv1.GroupVersion.Group,
 			})
 
-			changeSet, err := resourceManager.DeleteAll(ctx, objects,
-				resourceManager.GetOwnerLabels(cueBuild.Name, cueBuild.Namespace),
-				map[string]string{
-					fmt.Sprintf("%s/prune", cuebuildv1.GroupVersion.Group): cuebuildv1.DisabledValue,
+			opts := ssa.DeleteOptions{
+				PropagationPolicy: metav1.DeletePropagationBackground,
+				Inclusions:        resourceManager.GetOwnerLabels(cueBuild.Name, cueBuild.Namespace),
+				Exclusions: map[string]string{
+					fmt.Sprintf("%s/prune", cuebuildv1.GroupVersion.Group):     cuebuildv1.DisabledValue,
+					fmt.Sprintf("%s/reconcile", cuebuildv1.GroupVersion.Group): cuebuildv1.DisabledValue,
 				},
-			)
+			}
+
+			changeSet, err := resourceManager.DeleteAll(ctx, objects, opts)
 			if err != nil {
 				r.event(ctx, cueBuild, cueBuild.Status.LastAppliedRevision, events.EventSeverityError, "pruning for deleted resource failed", nil)
 				// Return the error so we retry the failed garbage collection
