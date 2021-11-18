@@ -319,7 +319,7 @@ func (r *CueBuildReconciler) reconcile(
 				cueBuild,
 				revision,
 				cuebuildv1.BuildFailedReason,
-				err.Error(),
+				instance.Err.Error(),
 			), fmt.Errorf("failed to load instance: %w", instance.Err)
 		}
 	}
