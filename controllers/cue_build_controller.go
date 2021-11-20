@@ -658,6 +658,7 @@ func (r *CueBuildReconciler) apply(ctx context.Context, manager *ssa.ResourceMan
 
 	for _, u := range objects {
 		if ssa.IsClusterDefinition(u) {
+			u.SetNamespace("")
 			stageOne = append(stageOne, u)
 		} else {
 			stageTwo = append(stageTwo, u)
