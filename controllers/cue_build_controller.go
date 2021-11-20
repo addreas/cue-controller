@@ -351,24 +351,13 @@ func (r *CueBuildReconciler) reconcile(
 	}
 
 	// build the cueBuild
-	resources, err := r.build(ctx, cueBuild, values)
+	objects, err := r.build(ctx, cueBuild, values)
 	if err != nil {
 		return cuebuildv1.CueBuildNotReady(
 			cueBuild,
 			revision,
 			cuebuildv1.BuildFailedReason,
 			fmt.Sprint("failed to build", err),
-		), err
-	}
-
-	// convert the build result into Kubernetes unstructured objects
-	objects, err := ssa.ReadObjects(bytes.NewReader(resources))
-	if err != nil {
-		return cuebuildv1.CueBuildNotReady(
-			cueBuild,
-			revision,
-			cuebuildv1.BuildFailedReason,
-			err.Error(),
 		), err
 	}
 
@@ -598,13 +587,13 @@ func (r *CueBuildReconciler) getSource(ctx context.Context, cueBuild cuebuildv1.
 	return source, nil
 }
 
-func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueBuild, values []cue.Value) ([]byte, error) {
+func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueBuild, values []cue.Value) ([]*unstructured.Unstructured, error) {
 	timeout := cueBuild.GetTimeout()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	errors := make([]string, 0)
-	resources := bytes.Buffer{}
+	objects := make([]*unstructured.Unstructured, 0)
 	for _, inst := range values {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -615,12 +604,21 @@ func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueB
 				v.LookupPath(cue.ParsePath("kind")).Exists() &&
 				v.LookupPath(cue.ParsePath("metadata.name")).Exists() {
 
+				resource := unstructured.Unstructured{}
 				bytes, err := v.MarshalJSON()
+
 				if err != nil {
-					errors = append(errors, fmt.Sprintf("failed to json marshal: %s", err))
+					errors = append(errors, fmt.Sprintf("failed to marshal json: %s", err))
 				}
-				resources.Write(bytes)
-				resources.WriteString("\n")
+
+				err = resource.UnmarshalJSON(bytes)
+
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("failed to unmarshal json: %s", err))
+				} else {
+					objects = append(objects, &resource)
+				}
+
 				return false
 			}
 			return true
@@ -631,7 +629,7 @@ func (r *CueBuildReconciler) build(ctx context.Context, cueBuild cuebuildv1.CueB
 		return nil, fmt.Errorf(strings.Join(errors, "\n"))
 	}
 
-	return resources.Bytes(), nil
+	return objects, nil
 }
 
 func (r *CueBuildReconciler) apply(ctx context.Context, manager *ssa.ResourceManager, cueBuild cuebuildv1.CueBuild, revision string, objects []*unstructured.Unstructured) (bool, *ssa.ChangeSet, error) {
