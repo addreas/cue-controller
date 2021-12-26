@@ -253,7 +253,7 @@ func (r *CueBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// broadcast the reconciliation failure and requeue at the specified retry interval
 	if reconcileErr != nil {
 		log.Error(reconcileErr, fmt.Sprintf("Reconciliation failed after %s, next try in %s",
-			time.Now().Sub(reconcileStart).String(),
+			time.Since(reconcileStart).String(),
 			cueBuild.GetRetryInterval().String()),
 			"revision",
 			source.GetArtifact().Revision)
@@ -264,12 +264,9 @@ func (r *CueBuildReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// broadcast the reconciliation result and requeue at the specified interval
 	msg := fmt.Sprintf("Reconciliation finished in %s, next run in %s",
-		time.Now().Sub(reconcileStart).String(),
+		time.Since(reconcileStart).String(),
 		cueBuild.Spec.Interval.Duration.String())
-	log.Info(fmt.Sprintf(msg),
-		"revision",
-		source.GetArtifact().Revision,
-	)
+	log.Info(msg, "revision", source.GetArtifact().Revision)
 	r.event(ctx, reconciledCueBuild, source.GetArtifact().Revision, events.EventSeverityInfo,
 		msg, map[string]string{"commit_status": "update"})
 	return ctrl.Result{RequeueAfter: cueBuild.Spec.Interval.Duration}, nil
@@ -763,13 +760,13 @@ func (r *CueBuildReconciler) checkHealth(ctx context.Context, manager *ssa.Resou
 		Interval: 5 * time.Second,
 		Timeout:  cueBuild.GetTimeout(),
 	}); err != nil {
-		return fmt.Errorf("Health check failed after %s, %w", time.Now().Sub(checkStart).String(), err)
+		return fmt.Errorf("Health check failed after %s, %w", time.Since(checkStart).String(), err)
 	}
 
 	// emit event if the previous health check failed
 	if !wasHealthy || (cueBuild.Status.LastAppliedRevision != revision && drifted) {
 		r.event(ctx, cueBuild, revision, events.EventSeverityInfo,
-			fmt.Sprintf("Health check passed in %s", time.Now().Sub(checkStart).String()), nil)
+			fmt.Sprintf("Health check passed in %s", time.Since(checkStart).String()), nil)
 	}
 
 	return nil
@@ -812,7 +809,7 @@ func (r *CueBuildReconciler) finalize(ctx context.Context, cueBuild cuebuildv1.C
 		!cueBuild.Spec.Suspend &&
 		cueBuild.Status.Inventory != nil &&
 		cueBuild.Status.Inventory.Entries != nil {
-		objects, err := ListObjectsInInventory(cueBuild.Status.Inventory)
+		objects, _ := ListObjectsInInventory(cueBuild.Status.Inventory)
 
 		impersonation := NewCueBuildImpersonation(cueBuild, r.Client, r.StatusPoller, "")
 		kubeClient, _, err := impersonation.GetClient(ctx)
@@ -865,16 +862,18 @@ func (r *CueBuildReconciler) finalize(ctx context.Context, cueBuild cuebuildv1.C
 func (r *CueBuildReconciler) event(ctx context.Context, cueBuild cuebuildv1.CueBuild, revision, severity, msg string, metadata map[string]string) {
 	log := logr.FromContext(ctx)
 
-	annotations := map[string]string{
-		cuebuildv1.GroupVersion.Group + "/revision": revision,
-	}
+	if r.EventRecorder != nil {
+		annotations := map[string]string{
+			cuebuildv1.GroupVersion.Group + "/revision": revision,
+		}
 
-	eventtype := "Normal"
-	if severity == events.EventSeverityError {
-		eventtype = "Warning"
-	}
+		eventtype := "Normal"
+		if severity == events.EventSeverityError {
+			eventtype = "Warning"
+		}
 
-	r.EventRecorder.AnnotatedEventf(&cueBuild, annotations, eventtype, severity, msg)
+		r.EventRecorder.AnnotatedEventf(&cueBuild, annotations, eventtype, severity, msg)
+	}
 
 	if r.ExternalEventRecorder != nil {
 		objRef, err := reference.GetReference(r.Scheme, &cueBuild)

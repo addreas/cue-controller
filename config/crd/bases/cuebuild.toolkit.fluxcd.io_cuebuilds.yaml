@@ -4,7 +4,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.4.1
+    controller-gen.kubebuilder.io/version: v0.5.0
   creationTimestamp: null
   name: cuebuilds.cuebuild.toolkit.fluxcd.io
 spec:
@@ -32,14 +32,10 @@ spec:
         description: CueBuild is the Schema for the CueBuilds API.
         properties:
           apiVersion:
-            description: 'APIVersion defines the versioned schema of this representation
-              of an object. Servers should convert recognized schemas to the latest
-              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            description: 'APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
             type: string
           kind:
-            description: 'Kind is a string value representing the REST resource this
-              object represents. Servers may infer this from the endpoint the client
-              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            description: 'Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
             type: string
           metadata:
             type: object
@@ -47,12 +43,9 @@ spec:
             description: CueBuildSpec defines the desired state of a cueBuild.
             properties:
               dependsOn:
-                description: DependsOn may contain a dependency.CrossNamespaceDependencyReference
-                  slice with references to CueBuild resources that must be ready before
-                  this CueBuild can be reconciled.
+                description: DependsOn may contain a dependency.CrossNamespaceDependencyReference slice with references to CueBuild resources that must be ready before this CueBuild can be reconciled.
                 items:
-                  description: CrossNamespaceDependencyReference holds the reference
-                    to a dependency.
+                  description: CrossNamespaceDependencyReference holds the reference to a dependency.
                   properties:
                     name:
                       description: Name holds the name reference of a dependency.
@@ -66,18 +59,15 @@ spec:
                 type: array
               force:
                 default: false
-                description: Force instructs the controller to recreate resources
-                  when patching fails due to an immutable field change.
+                description: Force instructs the controller to recreate resources when patching fails due to an immutable field change.
                 type: boolean
               healthChecks:
                 description: A list of resources to be included in the health assessment.
                 items:
-                  description: NamespacedObjectKindReference contains enough information
-                    to let you locate the typed referenced object in any namespace
+                  description: NamespacedObjectKindReference contains enough information to let you locate the typed referenced object in any namespace
                   properties:
                     apiVersion:
-                      description: API version of the referent, if not specified the
-                        Kubernetes preferred version will be used
+                      description: API version of the referent, if not specified the Kubernetes preferred version will be used
                       type: string
                     kind:
                       description: Kind of the referent
@@ -86,8 +76,7 @@ spec:
                       description: Name of the referent
                       type: string
                     namespace:
-                      description: Namespace of the referent, when not specified it
-                        acts as LocalObjectReference
+                      description: Namespace of the referent, when not specified it acts as LocalObjectReference
                       type: string
                   required:
                   - kind
@@ -98,18 +87,10 @@ spec:
                 description: The interval at which to reconcile the CueBuild.
                 type: string
               kubeConfig:
-                description: The KubeConfig for reconciling the CueBuild on a remote
-                  cluster. When specified, KubeConfig takes precedence over ServiceAccountName.
+                description: The KubeConfig for reconciling the CueBuild on a remote cluster. When specified, KubeConfig takes precedence over ServiceAccountName.
                 properties:
                   secretRef:
-                    description: SecretRef holds the name to a secret that contains
-                      a 'value' key with the kubeconfig file as the value. It must
-                      be in the same namespace as the CueBuild. It is recommended
-                      that the kubeconfig is self-contained, and the secret is regularly
-                      updated if credentials such as a cloud-access-token expire.
-                      Cloud specific `cmd-path` auth helpers will not function without
-                      adding binaries and credentials to the Pod that is responsible
-                      for reconciling the CueBuild.
+                    description: SecretRef holds the name to a secret that contains a 'value' key with the kubeconfig file as the value. It must be in the same namespace as the CueBuild. It is recommended that the kubeconfig is self-contained, and the secret is regularly updated if credentials such as a cloud-access-token expire. Cloud specific `cmd-path` auth helpers will not function without adding binaries and credentials to the Pod that is responsible for reconciling the CueBuild.
                     properties:
                       name:
                         description: Name of the referent
@@ -127,13 +108,10 @@ spec:
                 description: Prune enables garbage collection.
                 type: boolean
               retryInterval:
-                description: The interval at which to retry a previously failed reconciliation.
-                  When not specified, the controller uses the CueBuildSpec.Interval
-                  value to retry failures.
+                description: The interval at which to retry a previously failed reconciliation. When not specified, the controller uses the CueBuildSpec.Interval value to retry failures.
                 type: string
               serviceAccountName:
-                description: The name of the Kubernetes service account to impersonate
-                  when reconciling this CueBuild.
+                description: The name of the Kubernetes service account to impersonate when reconciling this CueBuild.
                 type: string
               sourceRef:
                 description: Reference of the source where the cue packages are.
@@ -151,28 +129,20 @@ spec:
                     description: Name of the referent
                     type: string
                   namespace:
-                    description: Namespace of the referent, defaults to the CueBuild
-                      namespace
+                    description: Namespace of the referent, defaults to the CueBuild namespace
                     type: string
                 required:
                 - kind
                 - name
                 type: object
               suspend:
-                description: This flag tells the controller to suspend subsequent
-                  cue build executions, it does not apply to already started executions.
-                  Defaults to false.
+                description: This flag tells the controller to suspend subsequent cue build executions, it does not apply to already started executions. Defaults to false.
                 type: boolean
               timeout:
-                description: Timeout for validation, apply and health checking operations.
-                  Defaults to 'Interval' duration.
+                description: Timeout for validation, apply and health checking operations. Defaults to 'Interval' duration.
                 type: string
               validation:
-                description: Validate the Kubernetes objects before applying them
-                  on the cluster. The validation strategy can be 'client' (local dry-run),
-                  'server' (APIServer dry-run) or 'none'. When 'Force' is 'true',
-                  validation will fallback to 'client' if set to 'server' because
-                  server-side validation is not supported in this scenario.
+                description: Validate the Kubernetes objects before applying them on the cluster. The validation strategy can be 'client' (local dry-run), 'server' (APIServer dry-run) or 'none'. When 'Force' is 'true', validation will fallback to 'client' if set to 'server' because server-side validation is not supported in this scenario.
                 enum:
                 - none
                 - client
@@ -188,45 +158,23 @@ spec:
             properties:
               conditions:
                 items:
-                  description: "Condition contains details for one aspect of the current
-                    state of this API Resource. --- This struct is intended for direct
-                    use as an array at the field path .status.conditions.  For example,
-                    type FooStatus struct{     // Represents the observations of a
-                    foo's current state.     // Known .status.conditions.type are:
-                    \"Available\", \"Progressing\", and \"Degraded\"     // +patchMergeKey=type
-                    \    // +patchStrategy=merge     // +listType=map     // +listMapKey=type
-                    \    Conditions []metav1.Condition `json:\"conditions,omitempty\"
-                    patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"`
-                    \n     // other fields }"
+                  description: "Condition contains details for one aspect of the current state of this API Resource. --- This struct is intended for direct use as an array at the field path .status.conditions.  For example, type FooStatus struct{     // Represents the observations of a foo's current state.     // Known .status.conditions.type are: \"Available\", \"Progressing\", and \"Degraded\"     // +patchMergeKey=type     // +patchStrategy=merge     // +listType=map     // +listMapKey=type     Conditions []metav1.Condition `json:\"conditions,omitempty\" patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"` \n     // other fields }"
                   properties:
                     lastTransitionTime:
-                      description: lastTransitionTime is the last time the condition
-                        transitioned from one status to another. This should be when
-                        the underlying condition changed.  If that is not known, then
-                        using the time when the API field changed is acceptable.
+                      description: lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
                       format: date-time
                       type: string
                     message:
-                      description: message is a human readable message indicating
-                        details about the transition. This may be an empty string.
+                      description: message is a human readable message indicating details about the transition. This may be an empty string.
                       maxLength: 32768
                       type: string
                     observedGeneration:
-                      description: observedGeneration represents the .metadata.generation
-                        that the condition was set based upon. For instance, if .metadata.generation
-                        is currently 12, but the .status.conditions[x].observedGeneration
-                        is 9, the condition is out of date with respect to the current
-                        state of the instance.
+                      description: observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.
                       format: int64
                       minimum: 0
                       type: integer
                     reason:
-                      description: reason contains a programmatic identifier indicating
-                        the reason for the condition's last transition. Producers
-                        of specific condition types may define expected values and
-                        meanings for this field, and whether the values are considered
-                        a guaranteed API. The value should be a CamelCase string.
-                        This field may not be empty.
+                      description: reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty.
                       maxLength: 1024
                       minLength: 1
                       pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
@@ -239,11 +187,7 @@ spec:
                       - Unknown
                       type: string
                     type:
-                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                        --- Many .condition.type values are consistent across resources
-                        like Available, but because arbitrary conditions can be useful
-                        (see .node.status.conditions), the ability to deconflict is
-                        important. The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase. --- Many .condition.type values are consistent across resources like Available, but because arbitrary conditions can be useful (see .node.status.conditions), the ability to deconflict is important. The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
                       maxLength: 316
                       pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
                       type: string
@@ -256,16 +200,13 @@ spec:
                   type: object
                 type: array
               lastAppliedRevision:
-                description: The last successfully applied revision. The revision
-                  format for Git sources is <branch|tag>/<commit-sha>.
+                description: The last successfully applied revision. The revision format for Git sources is <branch|tag>/<commit-sha>.
                 type: string
               lastAttemptedRevision:
-                description: LastAttemptedRevision is the revision of the last reconciliation
-                  attempt.
+                description: LastAttemptedRevision is the revision of the last reconciliation attempt.
                 type: string
               lastHandledReconcileAt:
-                description: LastHandledReconcileAt holds the value of the most recent
-                  reconcile request value, so a change can be detected.
+                description: LastHandledReconcileAt holds the value of the most recent reconcile request value, so a change can be detected.
                 type: string
               observedGeneration:
                 description: ObservedGeneration is the last reconciled generation.
@@ -280,8 +221,7 @@ spec:
                   entries:
                     description: A list of Kubernetes kinds grouped by namespace.
                     items:
-                      description: Snapshot holds the metadata of namespaced Kubernetes
-                        objects
+                      description: Snapshot holds the metadata of namespaced Kubernetes objects
                       properties:
                         kinds:
                           additionalProperties:
@@ -321,28 +261,20 @@ spec:
         description: CueBuild is the Schema for the cueBuilds API.
         properties:
           apiVersion:
-            description: 'APIVersion defines the versioned schema of this representation
-              of an object. Servers should convert recognized schemas to the latest
-              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            description: 'APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
             type: string
           kind:
-            description: 'Kind is a string value representing the REST resource this
-              object represents. Servers may infer this from the endpoint the client
-              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            description: 'Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
             type: string
           metadata:
             type: object
           spec:
-            description: CueBuildSpec defines the configuration to calculate the desired
-              state from a Source using CUE.
+            description: CueBuildSpec defines the configuration to calculate the desired state from a Source using CUE.
             properties:
               dependsOn:
-                description: DependsOn may contain a dependency.CrossNamespaceDependencyReference
-                  slice with references to CueBuild resources that must be ready before
-                  this CueBuild can be reconciled.
+                description: DependsOn may contain a dependency.CrossNamespaceDependencyReference slice with references to CueBuild resources that must be ready before this CueBuild can be reconciled.
                 items:
-                  description: CrossNamespaceDependencyReference holds the reference
-                    to a dependency.
+                  description: CrossNamespaceDependencyReference holds the reference to a dependency.
                   properties:
                     name:
                       description: Name holds the name reference of a dependency.
@@ -356,18 +288,15 @@ spec:
                 type: array
               force:
                 default: false
-                description: Force instructs the controller to recreate resources
-                  when patching fails due to an immutable field change.
+                description: Force instructs the controller to recreate resources when patching fails due to an immutable field change.
                 type: boolean
               healthChecks:
                 description: A list of resources to be included in the health assessment.
                 items:
-                  description: NamespacedObjectKindReference contains enough information
-                    to let you locate the typed referenced object in any namespace
+                  description: NamespacedObjectKindReference contains enough information to let you locate the typed referenced object in any namespace
                   properties:
                     apiVersion:
-                      description: API version of the referent, if not specified the
-                        Kubernetes preferred version will be used
+                      description: API version of the referent, if not specified the Kubernetes preferred version will be used
                       type: string
                     kind:
                       description: Kind of the referent
@@ -376,8 +305,7 @@ spec:
                       description: Name of the referent
                       type: string
                     namespace:
-                      description: Namespace of the referent, when not specified it
-                        acts as LocalObjectReference
+                      description: Namespace of the referent, when not specified it acts as LocalObjectReference
                       type: string
                   required:
                   - kind
@@ -388,18 +316,10 @@ spec:
                 description: The interval at which to reconcile the CueBuild.
                 type: string
               kubeConfig:
-                description: The KubeConfig for reconciling the CueBuild on a remote
-                  cluster. When specified, KubeConfig takes precedence over ServiceAccountName.
+                description: The KubeConfig for reconciling the CueBuild on a remote cluster. When specified, KubeConfig takes precedence over ServiceAccountName.
                 properties:
                   secretRef:
-                    description: SecretRef holds the name to a secret that contains
-                      a 'value' key with the kubeconfig file as the value. It must
-                      be in the same namespace as the CueBuild. It is recommended
-                      that the kubeconfig is self-contained, and the secret is regularly
-                      updated if credentials such as a cloud-access-token expire.
-                      Cloud specific `cmd-path` auth helpers will not function without
-                      adding binaries and credentials to the Pod that is responsible
-                      for reconciling the CueBuild.
+                    description: SecretRef holds the name to a secret that contains a 'value' key with the kubeconfig file as the value. It must be in the same namespace as the CueBuild. It is recommended that the kubeconfig is self-contained, and the secret is regularly updated if credentials such as a cloud-access-token expire. Cloud specific `cmd-path` auth helpers will not function without adding binaries and credentials to the Pod that is responsible for reconciling the CueBuild.
                     properties:
                       name:
                         description: Name of the referent
@@ -417,13 +337,10 @@ spec:
                 description: Prune enables garbage collection.
                 type: boolean
               retryInterval:
-                description: The interval at which to retry a previously failed reconciliation.
-                  When not specified, the controller uses the CueBuildSpec.Interval
-                  value to retry failures.
+                description: The interval at which to retry a previously failed reconciliation. When not specified, the controller uses the CueBuildSpec.Interval value to retry failures.
                 type: string
               serviceAccountName:
-                description: The name of the Kubernetes service account to impersonate
-                  when reconciling this CueBuild.
+                description: The name of the Kubernetes service account to impersonate when reconciling this CueBuild.
                 type: string
               sourceRef:
                 description: Reference of the source where the cueBuild file is.
@@ -441,21 +358,17 @@ spec:
                     description: Name of the referent.
                     type: string
                   namespace:
-                    description: Namespace of the referent, defaults to the namespace
-                      of the Kubernetes resource object that contains the reference.
+                    description: Namespace of the referent, defaults to the namespace of the Kubernetes resource object that contains the reference.
                     type: string
                 required:
                 - kind
                 - name
                 type: object
               suspend:
-                description: This flag tells the controller to suspend subsequent
-                  CUE build executions, it does not apply to already started executions.
-                  Defaults to false.
+                description: This flag tells the controller to suspend subsequent CUE build executions, it does not apply to already started executions. Defaults to false.
                 type: boolean
               timeout:
-                description: Timeout for validation, apply and health checking operations.
-                  Defaults to 'Interval' duration.
+                description: Timeout for validation, apply and health checking operations. Defaults to 'Interval' duration.
                 type: string
               validation:
                 description: 'Deprecated: Not used in v1alpha2.'
@@ -465,9 +378,7 @@ spec:
                 - server
                 type: string
               wait:
-                description: Wait instructs the controller to check the health of
-                  all the reconciled resources. When enabled, the HealthChecks are
-                  ignored. Defaults to false.
+                description: Wait instructs the controller to check the health of all the reconciled resources. When enabled, the HealthChecks are ignored. Defaults to false.
                 type: boolean
             required:
             - interval
@@ -481,45 +392,23 @@ spec:
             properties:
               conditions:
                 items:
-                  description: "Condition contains details for one aspect of the current
-                    state of this API Resource. --- This struct is intended for direct
-                    use as an array at the field path .status.conditions.  For example,
-                    type FooStatus struct{     // Represents the observations of a
-                    foo's current state.     // Known .status.conditions.type are:
-                    \"Available\", \"Progressing\", and \"Degraded\"     // +patchMergeKey=type
-                    \    // +patchStrategy=merge     // +listType=map     // +listMapKey=type
-                    \    Conditions []metav1.Condition `json:\"conditions,omitempty\"
-                    patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"`
-                    \n     // other fields }"
+                  description: "Condition contains details for one aspect of the current state of this API Resource. --- This struct is intended for direct use as an array at the field path .status.conditions.  For example, type FooStatus struct{     // Represents the observations of a foo's current state.     // Known .status.conditions.type are: \"Available\", \"Progressing\", and \"Degraded\"     // +patchMergeKey=type     // +patchStrategy=merge     // +listType=map     // +listMapKey=type     Conditions []metav1.Condition `json:\"conditions,omitempty\" patchStrategy:\"merge\" patchMergeKey:\"type\" protobuf:\"bytes,1,rep,name=conditions\"` \n     // other fields }"
                   properties:
                     lastTransitionTime:
-                      description: lastTransitionTime is the last time the condition
-                        transitioned from one status to another. This should be when
-                        the underlying condition changed.  If that is not known, then
-                        using the time when the API field changed is acceptable.
+                      description: lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
                       format: date-time
                       type: string
                     message:
-                      description: message is a human readable message indicating
-                        details about the transition. This may be an empty string.
+                      description: message is a human readable message indicating details about the transition. This may be an empty string.
                       maxLength: 32768
                       type: string
                     observedGeneration:
-                      description: observedGeneration represents the .metadata.generation
-                        that the condition was set based upon. For instance, if .metadata.generation
-                        is currently 12, but the .status.conditions[x].observedGeneration
-                        is 9, the condition is out of date with respect to the current
-                        state of the instance.
+                      description: observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance.
                       format: int64
                       minimum: 0
                       type: integer
                     reason:
-                      description: reason contains a programmatic identifier indicating
-                        the reason for the condition's last transition. Producers
-                        of specific condition types may define expected values and
-                        meanings for this field, and whether the values are considered
-                        a guaranteed API. The value should be a CamelCase string.
-                        This field may not be empty.
+                      description: reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty.
                       maxLength: 1024
                       minLength: 1
                       pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
@@ -532,11 +421,7 @@ spec:
                       - Unknown
                       type: string
                     type:
-                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                        --- Many .condition.type values are consistent across resources
-                        like Available, but because arbitrary conditions can be useful
-                        (see .node.status.conditions), the ability to deconflict is
-                        important. The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase. --- Many .condition.type values are consistent across resources like Available, but because arbitrary conditions can be useful (see .node.status.conditions), the ability to deconflict is important. The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
                       maxLength: 316
                       pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
                       type: string
@@ -549,22 +434,18 @@ spec:
                   type: object
                 type: array
               inventory:
-                description: Inventory contains the list of Kubernetes resource object
-                  references that have been successfully applied.
+                description: Inventory contains the list of Kubernetes resource object references that have been successfully applied.
                 properties:
                   entries:
                     description: Entries of CueBuild resource object references.
                     items:
-                      description: ResourceRef contains the information necessary
-                        to locate a resource within a cluster.
+                      description: ResourceRef contains the information necessary to locate a resource within a cluster.
                       properties:
                         id:
-                          description: ID is the string representation of the CueBuild
-                            resource object's metadata, in the format '<namespace>_<name>_<group>_<kind>'.
+                          description: ID is the string representation of the CueBuild resource object's metadata, in the format '<namespace>_<name>_<group>_<kind>'.
                           type: string
                         v:
-                          description: Version is the API version of the CueBuild
-                            resource object's kind.
+                          description: Version is the API version of the CueBuild resource object's kind.
                           type: string
                       required:
                       - id
@@ -575,16 +456,13 @@ spec:
                 - entries
                 type: object
               lastAppliedRevision:
-                description: The last successfully applied revision. The revision
-                  format for Git sources is <branch|tag>/<commit-sha>.
+                description: The last successfully applied revision. The revision format for Git sources is <branch|tag>/<commit-sha>.
                 type: string
               lastAttemptedRevision:
-                description: LastAttemptedRevision is the revision of the last reconciliation
-                  attempt.
+                description: LastAttemptedRevision is the revision of the last reconciliation attempt.
                 type: string
               lastHandledReconcileAt:
-                description: LastHandledReconcileAt holds the value of the most recent
-                  reconcile request value, so a change can be detected.
+                description: LastHandledReconcileAt holds the value of the most recent reconcile request value, so a change can be detected.
                 type: string
               observedGeneration:
                 description: ObservedGeneration is the last reconciled generation.
