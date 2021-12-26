@@ -5,4 +5,4 @@ resources:
 images:
 - name: ghcr.io/addreas/cuebuild-controller
   newName: ghcr.io/addreas/cuebuild-controller
-  newTag: latest
+  newTag: v0.18.2

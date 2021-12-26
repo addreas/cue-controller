@@ -344,6 +344,11 @@ Note that when the `kustomize.toolkit.fluxcd.io/reconcile` annotation is set to 
 the controller will no longer apply changes from source, nor will it prune the resource.
 To resume reconciliation, set the annotation to `enabled` or remove it.
 
+Note that due to the way [Kubernetes server-side apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
+works, the kustomize-controller can only revert
+changes made to fields it manages. This means that `kubectl edit` changes will only be reverted if
+those fields are present in git.
+
 ## Garbage collection
 
 To enable garbage collection, set `spec.prune` to `true`.
@@ -754,6 +759,19 @@ spec:
         name: cluster-vars
       - kind: Secret
         name: cluster-secret-vars
+```
+
+Note that for substituting variables in a secret, `spec.stringData` field must be used i.e
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret
+  namespace: flux-system
+type: Opaque
+stringData:
+  token: ${token}
 ```
 
 The var values which are specified in-line with `substitute`
