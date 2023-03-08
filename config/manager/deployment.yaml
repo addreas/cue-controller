@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kustomize-controller
+  name: cue-controller
   labels:
     control-plane: controller
 spec:
   selector:
     matchLabels:
-      app: kustomize-controller
+      app: cue-controller
   replicas: 1
   template:
     metadata:
       labels:
-        app: kustomize-controller
+        app: cue-controller
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8080"
@@ -24,7 +24,7 @@ spec:
         fsGroup: 1337
       containers:
       - name: manager
-        image: fluxcd/kustomize-controller
+        image: ghcr.io/addreas/cue-controller
         imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false

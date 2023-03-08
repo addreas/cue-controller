@@ -29,7 +29,7 @@ COPY internal/ internal/
 
 # build
 ENV CGO_ENABLED=0
-RUN xx-go build -trimpath -a -o kustomize-controller main.go
+RUN xx-go build -trimpath -a -o cue-controller main.go
 
 FROM alpine:3.17
 
@@ -37,10 +37,10 @@ FROM alpine:3.17
 RUN apk add --no-cache ca-certificates tini git openssh-client && \
 	apk add --no-cache gnupg --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main
 
-COPY --from=builder /workspace/kustomize-controller /usr/local/bin/
+COPY --from=builder /workspace/cue-controller /usr/local/bin/
 
 USER 65534:65534
 
 ENV GNUPGHOME=/tmp
 
-ENTRYPOINT [ "/sbin/tini", "--", "kustomize-controller" ]
+ENTRYPOINT [ "/sbin/tini", "--", "cue-controller" ]

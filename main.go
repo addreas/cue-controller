@@ -44,14 +44,14 @@ import (
 	"github.com/fluxcd/pkg/runtime/probes"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
-	"github.com/fluxcd/kustomize-controller/controllers"
-	"github.com/fluxcd/kustomize-controller/internal/features"
-	"github.com/fluxcd/kustomize-controller/internal/statusreaders"
+	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
+	"github.com/addreas/cue-controller/controllers"
+	"github.com/addreas/cue-controller/internal/features"
+	"github.com/addreas/cue-controller/internal/statusreaders"
 	// +kubebuilder:scaffold:imports
 )
 
-const controllerName = "kustomize-controller"
+const controllerName = "cue-controller"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -62,7 +62,7 @@ func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 
 	_ = sourcev1.AddToScheme(scheme)
-	_ = kustomizev1.AddToScheme(scheme)
+	_ = cuev1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -169,7 +169,7 @@ func main() {
 	if ok, _ := features.Enabled(features.DisableStatusPollerCache); ok {
 		pollingOpts.ClusterReaderFactory = engine.ClusterReaderFactoryFunc(clusterreader.NewDirectClusterReader)
 	}
-	if err = (&controllers.KustomizationReconciler{
+	if err = (&controllers.CueReconciler{
 		ControllerName:        controllerName,
 		DefaultServiceAccount: defaultServiceAccount,
 		Client:                mgr.GetClient(),
@@ -180,7 +180,7 @@ func main() {
 		KubeConfigOpts:        kubeConfigOpts,
 		PollingOpts:           pollingOpts,
 		StatusPoller:          polling.NewStatusPoller(mgr.GetClient(), mgr.GetRESTMapper(), pollingOpts),
-	}).SetupWithManager(mgr, controllers.KustomizationReconcilerOptions{
+	}).SetupWithManager(mgr, controllers.CueReconcilerOptions{
 		MaxConcurrentReconciles:   concurrent,
 		DependencyRequeueInterval: requeueDependency,
 		HTTPRetry:                 httpRetry,

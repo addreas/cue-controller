@@ -23,12 +23,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
 	"github.com/fluxcd/pkg/runtime/dependency"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
 )
 
-func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) func(obj client.Object) []reconcile.Request {
+func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) func(obj client.Object) []reconcile.Request {
 	return func(obj client.Object) []reconcile.Request {
 		repo, ok := obj.(interface {
 			GetArtifact() *sourcev1.Artifact
@@ -42,7 +42,7 @@ func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) f
 		}
 
 		ctx := context.Background()
-		var list kustomizev1.KustomizationList
+		var list cuev1.CueExportList
 		if err := r.List(ctx, &list, client.MatchingFields{
 			indexKey: client.ObjectKeyFromObject(obj).String(),
 		}); err != nil {
@@ -70,9 +70,9 @@ func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) f
 	}
 }
 
-func (r *KustomizationReconciler) indexBy(kind string) func(o client.Object) []string {
+func (r *CueReconciler) indexBy(kind string) func(o client.Object) []string {
 	return func(o client.Object) []string {
-		k, ok := o.(*kustomizev1.Kustomization)
+		k, ok := o.(*cuev1.CueExport)
 		if !ok {
 			panic(fmt.Sprintf("Expected a Kustomization, got %T", o))
 		}

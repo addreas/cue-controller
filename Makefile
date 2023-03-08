@@ -1,11 +1,8 @@
 # Image URL to use all building/pushing image targets
-IMG ?= fluxcd/kustomize-controller:latest
+IMG ?= ghcr.io/addreas/cue-controller:latest
 # Produce CRDs that work back to Kubernetes 1.16
 CRD_OPTIONS ?= crd:crdVersions=v1
 SOURCE_VER ?= $(shell go list -m all | grep github.com/fluxcd/source-controller/api | awk '{print $$2}')
-
-# Use the same version of SOPS already referenced on go.mod
-SOPS_VER := $(shell go list -m all | grep go.mozilla.org/sops | awk '{print $$2}')
 
 # Repository root based on Git metadata
 REPOSITORY_ROOT := $(shell git rev-parse --show-toplevel)
@@ -56,13 +53,9 @@ install-envtest: setup-envtest
 	mkdir -p ${ENVTEST_ASSETS_DIR}
 	$(ENVTEST) use $(ENVTEST_KUBERNETES_VERSION) --arch=$(ENVTEST_ARCH) --bin-dir=$(ENVTEST_ASSETS_DIR)
 
-SOPS = $(GOBIN)/sops
-$(SOPS): ## Download latest sops binary if none is found.
-	$(call go-install-tool,$(SOPS),go.mozilla.org/sops/v3/cmd/sops@$(SOPS_VER))
-
 # Run controller tests
 KUBEBUILDER_ASSETS?="$(shell $(ENVTEST) --arch=$(ENVTEST_ARCH) use -i $(ENVTEST_KUBERNETES_VERSION) --bin-dir=$(ENVTEST_ASSETS_DIR) -p path)"
-test: tidy generate fmt vet manifests api-docs download-crd-deps install-envtest $(SOPS)
+test: tidy generate fmt vet manifests api-docs download-crd-deps install-envtest
 	KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) go test ./... $(GO_TEST_ARGS) -v -coverprofile cover.out
 
 # Build manager binary
@@ -106,20 +99,20 @@ uninstall: manifests
 
 # Deploy controller in the configured Kubernetes cluster in ~/.kube/config
 deploy: manifests
-	cd config/manager && kustomize edit set image fluxcd/kustomize-controller=${IMG}
+	cd config/manager && kustomize edit set image ghcr.io/addreas/cue-controller=${IMG}
 	kustomize build config/default | kubectl apply -f -
 
 # Deploy controller dev image in the configured Kubernetes cluster in ~/.kube/config
 dev-deploy: manifests
 	mkdir -p config/dev && cp config/default/* config/dev
-	cd config/dev && kustomize edit set image fluxcd/kustomize-controller=${IMG}
+	cd config/dev && kustomize edit set image ghcr.io/addreas/cue-controller=${IMG}
 	kustomize build config/dev | kubectl apply -f -
 	rm -rf config/dev
 
 # Delete dev deployment and CRDs
 dev-cleanup: manifests
 	mkdir -p config/dev && cp config/default/* config/dev
-	cd config/dev && kustomize edit set image fluxcd/kustomize-controller=${IMG}
+	cd config/dev && kustomize edit set image ghcr.io/addreas/cue-controller=${IMG}
 	kustomize build config/dev | kubectl delete -f -
 	rm -rf config/dev
 
@@ -219,7 +212,7 @@ fuzz-smoketest: fuzz-build
 		bash -c "/runner.sh"
 
 # Run fuzz tests for the duration set in FUZZ_TIME.
-fuzz-native: 
+fuzz-native:
 	KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) \
 	FUZZ_TIME=$(FUZZ_TIME) \
 		./tests/fuzz/native_go_run.sh

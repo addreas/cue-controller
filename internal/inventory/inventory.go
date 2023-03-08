@@ -26,23 +26,23 @@ import (
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/ssa"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta2"
+	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
 )
 
-func New() *kustomizev1.ResourceInventory {
-	return &kustomizev1.ResourceInventory{
-		Entries: []kustomizev1.ResourceRef{},
+func New() *cuev1.ResourceInventory {
+	return &cuev1.ResourceInventory{
+		Entries: []cuev1.ResourceRef{},
 	}
 }
 
 // AddChangeSet extracts the metadata from the given objects and adds it to the inventory.
-func AddChangeSet(inv *kustomizev1.ResourceInventory, set *ssa.ChangeSet) error {
+func AddChangeSet(inv *cuev1.ResourceInventory, set *ssa.ChangeSet) error {
 	if set == nil {
 		return nil
 	}
 
 	for _, entry := range set.Entries {
-		inv.Entries = append(inv.Entries, kustomizev1.ResourceRef{
+		inv.Entries = append(inv.Entries, cuev1.ResourceRef{
 			ID:      entry.ObjMetadata.String(),
 			Version: entry.GroupVersion,
 		})
@@ -52,7 +52,7 @@ func AddChangeSet(inv *kustomizev1.ResourceInventory, set *ssa.ChangeSet) error 
 }
 
 // List returns the inventory entries as unstructured.Unstructured objects.
-func List(inv *kustomizev1.ResourceInventory) ([]*unstructured.Unstructured, error) {
+func List(inv *cuev1.ResourceInventory) ([]*unstructured.Unstructured, error) {
 	objects := make([]*unstructured.Unstructured, 0)
 
 	if inv.Entries == nil {
@@ -81,7 +81,7 @@ func List(inv *kustomizev1.ResourceInventory) ([]*unstructured.Unstructured, err
 }
 
 // ListMetadata returns the inventory entries as object.ObjMetadata objects.
-func ListMetadata(inv *kustomizev1.ResourceInventory) (object.ObjMetadataSet, error) {
+func ListMetadata(inv *cuev1.ResourceInventory) (object.ObjMetadataSet, error) {
 	var metas []object.ObjMetadata
 	for _, e := range inv.Entries {
 		m, err := object.ParseObjMetadata(e.ID)
@@ -95,8 +95,8 @@ func ListMetadata(inv *kustomizev1.ResourceInventory) (object.ObjMetadataSet, er
 }
 
 // Diff returns the slice of objects that do not exist in the target inventory.
-func Diff(inv *kustomizev1.ResourceInventory, target *kustomizev1.ResourceInventory) ([]*unstructured.Unstructured, error) {
-	versionOf := func(i *kustomizev1.ResourceInventory, objMetadata object.ObjMetadata) string {
+func Diff(inv *cuev1.ResourceInventory, target *cuev1.ResourceInventory) ([]*unstructured.Unstructured, error) {
+	versionOf := func(i *cuev1.ResourceInventory, objMetadata object.ObjMetadata) string {
 		for _, entry := range i.Entries {
 			if entry.ID == objMetadata.String() {
 				return entry.Version
