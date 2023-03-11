@@ -36,7 +36,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	kuberecorder "k8s.io/client-go/tools/record"
 	"sigs.k8s.io/cli-utils/pkg/kstatus/polling"
 	"sigs.k8s.io/cli-utils/pkg/object"
@@ -614,42 +613,63 @@ func getValueFromSource(tagvar *cuev1.TagVarSource) (string, error) {
 	return "", fmt.Errorf("todo")
 }
 
+var (
+	apiVersionPath   = cue.ParsePath("apiVersion")
+	kindPath         = cue.ParsePath("kind")
+	metadataNamePath = cue.ParsePath("metadata.name")
+)
+
 func (r *CueReconciler) build(ctx context.Context,
 	revision string, values []cue.Value,
 	obj *cuev1.CueExport,
 ) ([]*unstructured.Unstructured, error) {
+	log := ctrl.LoggerFrom(ctx)
 	timeout := obj.GetTimeout()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	objects := make([]*unstructured.Unstructured, 0)
+	log.V(1).Info("building resources", "len(values)", len(values))
+
+	objects := []*unstructured.Unstructured{}
 	errors := []error{}
 	for _, value := range values {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("failed to build cue values: %w", ctx.Err())
+		}
+		log.V(1).Info("searching for resources", "value.Kind", value.Kind())
 
 		if len(obj.Spec.Exprs) > 0 {
 			for _, e := range obj.Spec.Exprs {
+				log.V(1).Info("evaluating expr", "expr", e)
 				ex, err := parser.ParseExpr("", e)
 				if err != nil {
 					errors = append(errors, err)
 				} else {
 					result := value.Context().BuildExpr(ex, cue.Scope(value), cue.InferBuiltins(true))
-					objects, err = appendUnstructuredValues(objects, result)
+					moreObjects, err := unstructuredListFromValues(result)
 					if err != nil {
 						errors = append(errors, err)
 					}
+					objects = append(objects, moreObjects...)
 				}
 			}
 		} else {
+			log.V(1).Info("searching for apiVersion, kind, and metadata.name fields in value", "err", value.Err())
 			value.Walk(func(v cue.Value) bool {
 				if v.Kind() == cue.StructKind &&
-					v.LookupPath(cue.ParsePath("apiVersion")).Exists() &&
-					v.LookupPath(cue.ParsePath("kind")).Exists() &&
-					v.LookupPath(cue.ParsePath("metadata.name")).Exists() {
+					v.LookupPath(apiVersionPath).Exists() &&
+					v.LookupPath(kindPath).Exists() &&
+					v.LookupPath(metadataNamePath).Exists() {
 
-					var err error
-					objects, err = appendUnstructuredValue(objects, value)
+					log.V(1).Info("found for apiVersion, kind, and metadata.name fields in struct", "path", v.Path())
+
+					object, err := unstructuredFromValue(v)
 					if err != nil {
 						errors = append(errors, err)
+						log.V(1).Info("added err to to errors", "error", err)
+					} else {
+						objects = append(objects, object)
+						log.V(1).Info("added value to objects")
 					}
 
 					return false
@@ -657,7 +677,14 @@ func (r *CueReconciler) build(ctx context.Context,
 				return true
 			}, nil)
 		}
+	}
 
+	if len(errors) > 0 {
+		return nil, kerrors.NewAggregate(errors)
+	}
+
+	if len(objects) == 0 {
+		return nil, fmt.Errorf("found no objects in values")
 	}
 
 	return objects, nil
@@ -689,45 +716,52 @@ func (r *CueReconciler) checkGates(ctx context.Context,
 		}
 	}
 
-	return utilerrors.NewAggregate(errors)
+	return kerrors.NewAggregate(errors)
 }
 
-func appendUnstructuredValue(objects []*unstructured.Unstructured, value cue.Value) ([]*unstructured.Unstructured, error) {
-	resource := unstructured.Unstructured{}
+func unstructuredFromValue(value cue.Value) (*unstructured.Unstructured, error) {
+	resource := &unstructured.Unstructured{}
 	bytes, err := value.MarshalJSON()
 
 	if err != nil {
-		return objects, fmt.Errorf("failed to marshal json: %s", err)
+		return nil, fmt.Errorf("failed to marshal json: %s", err)
 	}
 
 	err = resource.UnmarshalJSON(bytes)
 
 	if err != nil {
-		return objects, fmt.Errorf("failed to unmarshal json: %s", err)
+		return nil, fmt.Errorf("failed to unmarshal json: %s", err)
 	} else {
-		return append(objects, &resource), nil
+		return resource, nil
 	}
 }
 
-func appendUnstructuredValues(objects []*unstructured.Unstructured, value cue.Value) ([]*unstructured.Unstructured, error) {
+func unstructuredListFromValues(value cue.Value) ([]*unstructured.Unstructured, error) {
 	errors := []error{}
 	switch value.Kind() {
 	case cue.StructKind:
-		return appendUnstructuredValue(objects, value)
+		obj, err := unstructuredFromValue(value)
+		if err != nil {
+			return nil, err
+		}
+		return []*unstructured.Unstructured{obj}, nil
 	case cue.ListKind:
+		objects := []*unstructured.Unstructured{}
 		items, err := value.List()
 		if err != nil {
-			return objects, err
+			return nil, err
 		}
 		for hasNext := items.Next(); hasNext; hasNext = items.Next() {
-			objects, err = appendUnstructuredValue(objects, items.Value())
+			object, err := unstructuredFromValue(items.Value())
 			if err != nil {
 				errors = append(errors, err)
+			} else {
+				objects = append(objects, object)
 			}
 		}
-		return objects, nil
+		return objects, kerrors.NewAggregate(errors)
 	default:
-		return objects, fmt.Errorf("Unknown kubernetes object kind %v", value)
+		return nil, fmt.Errorf("Unknown kubernetes object kind %v", value)
 	}
 }
 

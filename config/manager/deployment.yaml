@@ -62,8 +62,8 @@ spec:
             port: healthz
         resources:
           limits:
-            cpu: 1000m
-            memory: 1Gi
+            cpu: 4000m
+            memory: 2Gi
           requests:
             cpu: 100m
             memory: 64Mi
