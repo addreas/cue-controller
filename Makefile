@@ -55,7 +55,7 @@ install-envtest: setup-envtest
 
 # Run controller tests
 KUBEBUILDER_ASSETS?="$(shell $(ENVTEST) --arch=$(ENVTEST_ARCH) use -i $(ENVTEST_KUBERNETES_VERSION) --bin-dir=$(ENVTEST_ASSETS_DIR) -p path)"
-test: tidy generate fmt vet manifests api-docs download-crd-deps install-envtest
+test: tidy generate fmt vet manifests download-crd-deps install-envtest
 	KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) go test ./... $(GO_TEST_ARGS) -v -coverprofile cover.out
 
 # Build manager binary
@@ -120,10 +120,6 @@ dev-cleanup: manifests
 manifests: controller-gen
 	$(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=manager-role paths="./..." output:crd:artifacts:config="config/crd/bases"
 	cd api; $(CONTROLLER_GEN) $(CRD_OPTIONS) rbac:roleName=manager-role paths="./..." output:crd:artifacts:config="../config/crd/bases"
-
-# Generate API reference documentation
-api-docs: gen-crd-api-reference-docs
-	$(GEN_CRD_API_REFERENCE_DOCS) -api-dir=./api/v1beta2 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/template -out-file=./docs/api/kustomize.md
 
 # Run go mod tidy
 tidy:

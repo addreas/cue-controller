@@ -53,6 +53,7 @@ import (
 	eventv1 "github.com/fluxcd/pkg/apis/event/v1beta1"
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/http/fetch"
+	generator "github.com/fluxcd/pkg/kustomize"
 	"github.com/fluxcd/pkg/runtime/acl"
 	runtimeClient "github.com/fluxcd/pkg/runtime/client"
 	"github.com/fluxcd/pkg/runtime/conditions"
@@ -61,7 +62,8 @@ import (
 	"github.com/fluxcd/pkg/runtime/predicates"
 	"github.com/fluxcd/pkg/ssa"
 	"github.com/fluxcd/pkg/tar"
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	sourcev1b2 "github.com/fluxcd/source-controller/api/v1beta2"
 
 	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
 	"github.com/addreas/cue-controller/internal/inventory"
@@ -110,7 +112,7 @@ func (r *CueReconciler) SetupWithManager(mgr ctrl.Manager, opts CueReconcilerOpt
 
 	// Index the CueExports by the OCIRepository references they (may) point at.
 	if err := mgr.GetCache().IndexField(context.TODO(), &cuev1.CueExport{}, ociRepositoryIndexKey,
-		r.indexBy(sourcev1.OCIRepositoryKind)); err != nil {
+		r.indexBy(sourcev1b2.OCIRepositoryKind)); err != nil {
 		return fmt.Errorf("failed setting index fields: %w", err)
 	}
 
@@ -122,7 +124,7 @@ func (r *CueReconciler) SetupWithManager(mgr ctrl.Manager, opts CueReconcilerOpt
 
 	// Index the CueExports by the Bucket references they (may) point at.
 	if err := mgr.GetCache().IndexField(context.TODO(), &cuev1.CueExport{}, bucketIndexKey,
-		r.indexBy(sourcev1.BucketKind)); err != nil {
+		r.indexBy(sourcev1b2.BucketKind)); err != nil {
 		return fmt.Errorf("failed setting index fields: %w", err)
 	}
 
@@ -141,7 +143,7 @@ func (r *CueReconciler) SetupWithManager(mgr ctrl.Manager, opts CueReconcilerOpt
 			predicate.Or(predicate.GenerationChangedPredicate{}, predicates.ReconcileRequestedPredicate{}),
 		)).
 		Watches(
-			&source.Kind{Type: &sourcev1.OCIRepository{}},
+			&source.Kind{Type: &sourcev1b2.OCIRepository{}},
 			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(ociRepositoryIndexKey)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
@@ -151,7 +153,7 @@ func (r *CueReconciler) SetupWithManager(mgr ctrl.Manager, opts CueReconcilerOpt
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
 		Watches(
-			&source.Kind{Type: &sourcev1.Bucket{}},
+			&source.Kind{Type: &sourcev1b2.Bucket{}},
 			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(bucketIndexKey)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
@@ -319,7 +321,7 @@ func (r *CueReconciler) reconcile(
 	defer os.RemoveAll(tmpDir)
 
 	// Download artifact and extract files to the tmp dir.
-	err = r.artifactFetcher.Fetch(src.GetArtifact().URL, src.GetArtifact().Checksum, tmpDir)
+	err = r.artifactFetcher.Fetch(src.GetArtifact().URL, src.GetArtifact().Digest, tmpDir)
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
 		return err
@@ -523,8 +525,8 @@ func (r *CueReconciler) getSource(ctx context.Context,
 	}
 
 	switch obj.Spec.SourceRef.Kind {
-	case sourcev1.OCIRepositoryKind:
-		var repository sourcev1.OCIRepository
+	case sourcev1b2.OCIRepositoryKind:
+		var repository sourcev1b2.OCIRepository
 		err := r.Client.Get(ctx, namespacedName, &repository)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
@@ -543,8 +545,8 @@ func (r *CueReconciler) getSource(ctx context.Context,
 			return src, fmt.Errorf("unable to get source '%s': %w", namespacedName, err)
 		}
 		src = &repository
-	case sourcev1.BucketKind:
-		var bucket sourcev1.Bucket
+	case sourcev1b2.BucketKind:
+		var bucket sourcev1b2.Bucket
 		err := r.Client.Get(ctx, namespacedName, &bucket)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
@@ -774,6 +776,10 @@ func (r *CueReconciler) apply(ctx context.Context,
 
 	if err := ssa.SetNativeKindsDefaults(objects); err != nil {
 		return false, nil, err
+	}
+
+	if meta := obj.Spec.CommonMetadata; meta != nil {
+		ssa.SetCommonMetadata(objects, meta.Labels, meta.Annotations)
 	}
 
 	applyOpts := ssa.DefaultApplyOptions()
@@ -1137,7 +1143,7 @@ func (r *CueReconciler) finalizeStatus(ctx context.Context,
 	if conditions.IsFalse(obj, meta.ReadyCondition) &&
 		conditions.Has(obj, meta.ReconcilingCondition) {
 		rc := conditions.Get(obj, meta.ReconcilingCondition)
-		rc.Reason = cuev1.ProgressingWithRetryReason
+		rc.Reason = meta.ProgressingWithRetryReason
 		conditions.Set(obj, rc)
 	}
 

@@ -25,7 +25,7 @@ import (
 
 	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
 	"github.com/fluxcd/pkg/runtime/dependency"
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta2"
+	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 )
 
 func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) func(obj client.Object) []reconcile.Request {

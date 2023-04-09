@@ -3,10 +3,10 @@ module github.com/addreas/cue-controller/api
 go 1.18
 
 require (
-	github.com/fluxcd/pkg/apis/meta v0.19.1
-	k8s.io/api v0.26.2
-	k8s.io/apimachinery v0.26.2
-	sigs.k8s.io/controller-runtime v0.14.5
+	github.com/fluxcd/pkg/apis/meta v1.0.0
+	k8s.io/api v0.26.3
+	k8s.io/apimachinery v0.26.3
+	sigs.k8s.io/controller-runtime v0.14.6
 )
 
 // Fix CVE-2022-28948
