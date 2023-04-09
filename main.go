@@ -160,7 +160,7 @@ func main() {
 		ClientDisableCacheFor:         disableCacheFor,
 		NewCache: ctrlcache.BuilderWithOptions(ctrlcache.Options{
 			SelectorsByObject: ctrlcache.SelectorsByObject{
-				&kustomizev1.Kustomization{}: {Label: watchSelector},
+				&cuev1.CueExport{}: {Label: watchSelector},
 			},
 		}),
 	})

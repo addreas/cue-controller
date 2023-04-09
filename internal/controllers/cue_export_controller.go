@@ -53,7 +53,6 @@ import (
 	eventv1 "github.com/fluxcd/pkg/apis/event/v1beta1"
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/http/fetch"
-	generator "github.com/fluxcd/pkg/kustomize"
 	"github.com/fluxcd/pkg/runtime/acl"
 	runtimeClient "github.com/fluxcd/pkg/runtime/client"
 	"github.com/fluxcd/pkg/runtime/conditions"
@@ -776,10 +775,6 @@ func (r *CueReconciler) apply(ctx context.Context,
 
 	if err := ssa.SetNativeKindsDefaults(objects); err != nil {
 		return false, nil, err
-	}
-
-	if meta := obj.Spec.CommonMetadata; meta != nil {
-		ssa.SetCommonMetadata(objects, meta.Labels, meta.Annotations)
 	}
 
 	applyOpts := ssa.DefaultApplyOptions()
