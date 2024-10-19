@@ -30,11 +30,19 @@ const (
 	MaxConditionMessageLength = 20000
 	EnabledValue              = "enabled"
 	DisabledValue             = "disabled"
-	MergeValue                = "merge"
+	MergeValue                = "Merge"
+	IfNotPresentValue         = "IfNotPresent"
+	IgnoreValue               = "Ignore"
 )
 
 // CueExportSpec defines the configuration to calculate the desired state from a Source using Kustomize.
 type CueExportSpec struct {
+	// CommonMetadata specifies the common labels and annotations that are
+	// applied to all resources. Any existing label or annotation will be
+	// overridden if its key matches a common one.
+	// +optional
+	CommonMetadata *CommonMetadata `json:"commonMetadata,omitempty"`
+
 	// DependsOn may contain a meta.NamespacedObjectReference slice
 	// with references to CueExport resources that must be ready before this
 	// CueExport can be reconciled.
@@ -42,6 +50,8 @@ type CueExportSpec struct {
 	DependsOn []meta.NamespacedObjectReference `json:"dependsOn,omitempty"`
 
 	// The interval at which to reconcile the CueExport.
+	// This interval is approximate and may be subject to jitter to ensure
+	// efficient use of resources.
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
 	// +required
@@ -134,6 +144,17 @@ type CueExportSpec struct {
 	// When enabled, the HealthChecks are ignored. Defaults to false.
 	// +optional
 	Wait bool `json:"wait,omitempty"`
+}
+
+// CommonMetadata defines the common labels and annotations.
+type CommonMetadata struct {
+	// Annotations to be added to the object's metadata.
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
+
+	// Labels to be added to the object's metadata.
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // GateExpr defines a CUE expression that must be true for the CUE instance to be reconciled

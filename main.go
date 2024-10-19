@@ -27,27 +27,32 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/azure"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
-	"sigs.k8s.io/cli-utils/pkg/kstatus/polling"
-	"sigs.k8s.io/cli-utils/pkg/kstatus/polling/clusterreader"
-	"sigs.k8s.io/cli-utils/pkg/kstatus/polling/engine"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlcfg "sigs.k8s.io/controller-runtime/pkg/config"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/clusterreader"
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/engine"
 	"github.com/fluxcd/pkg/runtime/acl"
 	runtimeClient "github.com/fluxcd/pkg/runtime/client"
 	runtimeCtrl "github.com/fluxcd/pkg/runtime/controller"
 	"github.com/fluxcd/pkg/runtime/events"
 	feathelper "github.com/fluxcd/pkg/runtime/features"
+	"github.com/fluxcd/pkg/runtime/jitter"
 	"github.com/fluxcd/pkg/runtime/leaderelection"
 	"github.com/fluxcd/pkg/runtime/logger"
+	"github.com/fluxcd/pkg/runtime/metrics"
 	"github.com/fluxcd/pkg/runtime/pprof"
 	"github.com/fluxcd/pkg/runtime/probes"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	sourcev1b2 "github.com/fluxcd/source-controller/api/v1beta2"
 
 	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
-	"github.com/addreas/cue-controller/internal/controllers"
+	"github.com/addreas/cue-controller/internal/controller"
 	"github.com/addreas/cue-controller/internal/features"
 	"github.com/addreas/cue-controller/internal/statusreaders"
 	// +kubebuilder:scaffold:imports
@@ -71,33 +76,38 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr           string
-		eventsAddr            string
-		healthAddr            string
-		concurrent            int
-		requeueDependency     time.Duration
-		clientOptions         runtimeClient.Options
-		kubeConfigOpts        runtimeClient.KubeConfigOptions
-		logOptions            logger.Options
-		leaderElectionOptions leaderelection.Options
-		rateLimiterOptions    runtimeCtrl.RateLimiterOptions
-		watchOptions          runtimeCtrl.WatchOptions
-		aclOptions            acl.Options
-		noRemoteBases         bool
-		httpRetry             int
-		defaultServiceAccount string
-		featureGates          feathelper.FeatureGates
+		metricsAddr             string
+		eventsAddr              string
+		healthAddr              string
+		concurrent              int
+		concurrentSSA           int
+		requeueDependency       time.Duration
+		clientOptions           runtimeClient.Options
+		kubeConfigOpts          runtimeClient.KubeConfigOptions
+		logOptions              logger.Options
+		leaderElectionOptions   leaderelection.Options
+		rateLimiterOptions      runtimeCtrl.RateLimiterOptions
+		watchOptions            runtimeCtrl.WatchOptions
+		intervalJitterOptions   jitter.IntervalOptions
+		aclOptions              acl.Options
+		noRemoteBases           bool
+		httpRetry               int
+		defaultServiceAccount   string
+		featureGates            feathelper.FeatureGates
+		disallowedFieldManagers []string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&eventsAddr, "events-addr", "", "The address of the events receiver.")
 	flag.StringVar(&healthAddr, "health-addr", ":9440", "The address the health endpoint binds to.")
 	flag.IntVar(&concurrent, "concurrent", 4, "The number of concurrent kustomize reconciles.")
+	flag.IntVar(&concurrentSSA, "concurrent-ssa", 4, "The number of concurrent server-side apply operations.")
 	flag.DurationVar(&requeueDependency, "requeue-dependency", 30*time.Second, "The interval at which failing dependencies are reevaluated.")
 	flag.BoolVar(&noRemoteBases, "no-remote-bases", false,
 		"Disallow remote bases usage in Kustomize overlays. When this flag is enabled, all resources must refer to local files included in the source artifact.")
 	flag.IntVar(&httpRetry, "http-retry", 9, "The maximum number of retries when failing to fetch artifacts over HTTP.")
 	flag.StringVar(&defaultServiceAccount, "default-service-account", "", "Default service account used for impersonation.")
+	flag.StringArrayVar(&disallowedFieldManagers, "override-manager", []string{}, "Field manager disallowed to perform changes on managed resources.")
 
 	clientOptions.BindFlags(flag.CommandLine)
 	logOptions.BindFlags(flag.CommandLine)
@@ -107,13 +117,21 @@ func main() {
 	rateLimiterOptions.BindFlags(flag.CommandLine)
 	featureGates.BindFlags(flag.CommandLine)
 	watchOptions.BindFlags(flag.CommandLine)
+	intervalJitterOptions.BindFlags(flag.CommandLine)
 
 	flag.Parse()
 
 	logger.SetLogger(logger.NewLogger(logOptions))
 
+	ctx := ctrl.SetupSignalHandler()
+
 	if err := featureGates.WithLogger(setupLog).SupportedFeatures(features.FeatureGates()); err != nil {
 		setupLog.Error(err, "unable to load feature gates")
+		os.Exit(1)
+	}
+
+	if err := intervalJitterOptions.SetGlobalJitter(nil); err != nil {
+		setupLog.Error(err, "unable to set global jitter")
 		os.Exit(1)
 	}
 
@@ -144,33 +162,49 @@ func main() {
 	}
 
 	restConfig := runtimeClient.GetConfigOrDie(clientOptions)
-	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
+	mgrConfig := ctrl.Options{
 		Scheme:                        scheme,
-		MetricsBindAddress:            metricsAddr,
 		HealthProbeBindAddress:        healthAddr,
-		Port:                          9443,
 		LeaderElection:                leaderElectionOptions.Enable,
 		LeaderElectionReleaseOnCancel: leaderElectionOptions.ReleaseOnCancel,
 		LeaseDuration:                 &leaderElectionOptions.LeaseDuration,
 		RenewDeadline:                 &leaderElectionOptions.RenewDeadline,
 		RetryPeriod:                   &leaderElectionOptions.RetryPeriod,
 		LeaderElectionID:              leaderElectionId,
-		Namespace:                     watchNamespace,
 		Logger:                        ctrl.Log,
-		ClientDisableCacheFor:         disableCacheFor,
-		NewCache: ctrlcache.BuilderWithOptions(ctrlcache.Options{
-			SelectorsByObject: ctrlcache.SelectorsByObject{
+		Client: ctrlclient.Options{
+			Cache: &ctrlclient.CacheOptions{
+				DisableFor: disableCacheFor,
+			},
+		},
+		Cache: ctrlcache.Options{
+			ByObject: map[ctrlclient.Object]ctrlcache.ByObject{
 				&cuev1.CueExport{}: {Label: watchSelector},
 			},
-		}),
-	})
+		},
+		Metrics: metricsserver.Options{
+			BindAddress:   metricsAddr,
+			ExtraHandlers: pprof.GetHandlers(),
+		},
+		Controller: ctrlcfg.Controller{
+			MaxConcurrentReconciles: concurrent,
+			RecoverPanic:            ptr.To(true),
+		},
+	}
+
+	if watchNamespace != "" {
+		mgrConfig.Cache.DefaultNamespaces = map[string]ctrlcache.Config{
+			watchNamespace: ctrlcache.Config{},
+		}
+	}
+
+	mgr, err := ctrl.NewManager(restConfig, mgrConfig)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 
 	probes.SetupChecks(mgr, setupLog)
-	pprof.SetupHandlers(mgr, setupLog)
 
 	var eventRecorder *events.Recorder
 	if eventRecorder, err = events.NewRecorder(mgr, ctrl.Log, eventsAddr, controllerName); err != nil {
@@ -178,7 +212,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	metricsH := runtimeCtrl.MustMakeMetrics(mgr)
+	metricsH := runtimeCtrl.NewMetrics(mgr, metrics.MustMakeRecorder(), cuev1.CueExportFinalizer)
 
 	jobStatusReader := statusreaders.NewCustomJobStatusReader(mgr.GetRESTMapper())
 	pollingOpts := polling.Options{
@@ -189,19 +223,26 @@ func main() {
 		pollingOpts.ClusterReaderFactory = engine.ClusterReaderFactoryFunc(clusterreader.NewDirectClusterReader)
 	}
 
-	if err = (&controllers.CueReconciler{
-		ControllerName:        controllerName,
-		DefaultServiceAccount: defaultServiceAccount,
-		Client:                mgr.GetClient(),
-		Metrics:               metricsH,
-		EventRecorder:         eventRecorder,
-		NoCrossNamespaceRefs:  aclOptions.NoCrossNamespaceRefs,
-		NoRemoteBases:         noRemoteBases,
-		KubeConfigOpts:        kubeConfigOpts,
-		PollingOpts:           pollingOpts,
-		StatusPoller:          polling.NewStatusPoller(mgr.GetClient(), mgr.GetRESTMapper(), pollingOpts),
-	}).SetupWithManager(mgr, controllers.CueReconcilerOptions{
-		MaxConcurrentReconciles:   concurrent,
+	failFast := true
+	if ok, _ := features.Enabled(features.DisableFailFastBehavior); ok {
+		failFast = false
+	}
+
+	if err = (&controller.CueReconciler{
+		ControllerName:          controllerName,
+		DefaultServiceAccount:   defaultServiceAccount,
+		Client:                  mgr.GetClient(),
+		Metrics:                 metricsH,
+		EventRecorder:           eventRecorder,
+		NoCrossNamespaceRefs:    aclOptions.NoCrossNamespaceRefs,
+		NoRemoteBases:           noRemoteBases,
+		FailFast:                failFast,
+		ConcurrentSSA:           concurrentSSA,
+		KubeConfigOpts:          kubeConfigOpts,
+		PollingOpts:             pollingOpts,
+		StatusPoller:            polling.NewStatusPoller(mgr.GetClient(), mgr.GetRESTMapper(), pollingOpts),
+		DisallowedFieldManagers: disallowedFieldManagers,
+	}).SetupWithManager(ctx, mgr, controller.CueReconcilerOptions{
 		DependencyRequeueInterval: requeueDependency,
 		HTTPRetry:                 httpRetry,
 		RateLimiter:               runtimeCtrl.GetRateLimiter(rateLimiterOptions),
@@ -212,7 +253,7 @@ func main() {
 	// +kubebuilder:scaffold:builder
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

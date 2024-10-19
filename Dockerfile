@@ -1,5 +1,5 @@
-ARG GO_VERSION=1.20
-ARG XX_VERSION=1.2.1
+ARG GO_VERSION=1.21
+ARG XX_VERSION=1.3.0
 
 FROM --platform=$BUILDPLATFORM tonistiigi/xx:${XX_VERSION} AS xx
 
@@ -30,11 +30,12 @@ COPY internal/ internal/
 ENV CGO_ENABLED=0
 RUN xx-go build -trimpath -a -o cue-controller main.go
 
-FROM alpine:3.17
+FROM alpine:3.19
 
-# Uses GnuPG from edge to patch CVE-2022-3515.
-RUN apk add --no-cache ca-certificates tini git openssh-client && \
-	apk add --no-cache gnupg --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main
+ARG TARGETPLATFORM
+
+RUN apk --no-cache add ca-certificates tini git openssh-client gnupg \
+  && update-ca-certificates
 
 COPY --from=builder /workspace/cue-controller /usr/local/bin/
 

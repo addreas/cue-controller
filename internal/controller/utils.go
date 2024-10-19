@@ -14,12 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controllers
+package controller
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/fluxcd/pkg/ssa"
 )
 
 // MkdirTempAbs creates a tmp dir and returns the absolute path to the dir.
@@ -35,4 +37,17 @@ func MkdirTempAbs(dir, pattern string) (string, error) {
 		return "", fmt.Errorf("error evaluating symlink: %w", err)
 	}
 	return tmpDir, nil
+}
+
+// HasChanged evaluates the given action and returns true
+// if the action type matches a resource mutation or deletion.
+func HasChanged(action ssa.Action) bool {
+	switch action {
+	case ssa.SkippedAction:
+		return false
+	case ssa.UnchangedAction:
+		return false
+	default:
+		return true
+	}
 }

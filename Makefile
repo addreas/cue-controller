@@ -4,6 +4,9 @@ IMG ?= ghcr.io/addreas/cue-controller:latest
 CRD_OPTIONS ?= crd:crdVersions=v1
 SOURCE_VER ?= $(shell go list -m all | grep github.com/fluxcd/source-controller/api | awk '{print $$2}')
 
+# Use the same version of SOPS already referenced on go.mod
+SOPS_VER := $(shell go list -m all | grep github.com/getsops/sops | awk '{print $$2}')
+
 # Repository root based on Git metadata
 REPOSITORY_ROOT := $(shell git rev-parse --show-toplevel)
 BUILD_DIR := $(REPOSITORY_ROOT)/build
@@ -41,7 +44,7 @@ OCIREPO_CRD ?= config/crd/bases/ocirepositories.yaml
 SOURCE_CRD_VER=$(BUILD_DIR)/.src-crd-$(SOURCE_VER)
 
 # API (doc) generation utilities
-CONTROLLER_GEN_VERSION ?= v0.11.1
+CONTROLLER_GEN_VERSION ?= v0.12.0
 GEN_API_REF_DOCS_VERSION ?= e327d0730470cbd61b06300f81c5fcf91c23c113
 
 all: manager
@@ -52,6 +55,10 @@ ENVTEST_KUBERNETES_VERSION?=latest
 install-envtest: setup-envtest
 	mkdir -p ${ENVTEST_ASSETS_DIR}
 	$(ENVTEST) use $(ENVTEST_KUBERNETES_VERSION) --arch=$(ENVTEST_ARCH) --bin-dir=$(ENVTEST_ASSETS_DIR)
+
+SOPS = $(GOBIN)/sops
+$(SOPS): ## Download latest sops binary if none is found.
+	$(call go-install-tool,$(SOPS),github.com/getsops/sops/v3/cmd/sops@$(SOPS_VER))
 
 # Run controller tests
 KUBEBUILDER_ASSETS?="$(shell $(ENVTEST) --arch=$(ENVTEST_ARCH) use -i $(ENVTEST_KUBERNETES_VERSION) --bin-dir=$(ENVTEST_ASSETS_DIR) -p path)"
@@ -124,7 +131,7 @@ manifests: controller-gen
 # Run go mod tidy
 tidy:
 	cd api; rm -f go.sum; go mod tidy -compat=1.20
-	rm -f go.sum; go mod tidy -compat=1.20
+	rm -f go.sum; go mod tidy -compat=1.21
 
 # Run go fmt against code
 fmt:

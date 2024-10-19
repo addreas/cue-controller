@@ -14,13 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controllers
+package controller
 
 import (
 	"context"
 	"fmt"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
@@ -28,8 +29,8 @@ import (
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 )
 
-func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) func(obj client.Object) []reconcile.Request {
-	return func(obj client.Object) []reconcile.Request {
+func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		repo, ok := obj.(interface {
 			GetArtifact() *sourcev1.Artifact
 		})
@@ -41,7 +42,6 @@ func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) func(obj cl
 			return nil
 		}
 
-		ctx := context.Background()
 		var list cuev1.CueExportList
 		if err := r.List(ctx, &list, client.MatchingFields{
 			indexKey: client.ObjectKeyFromObject(obj).String(),

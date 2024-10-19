@@ -14,10 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controllers
+package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -29,6 +30,7 @@ import (
 	"cuelang.org/go/cue/load"
 	"cuelang.org/go/cue/parser"
 	securejoin "github.com/cyphar/filepath-securejoin"
+	ssautil "github.com/fluxcd/pkg/ssa/utils"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -37,8 +39,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	kuberecorder "k8s.io/client-go/tools/record"
-	"sigs.k8s.io/cli-utils/pkg/kstatus/polling"
-	"sigs.k8s.io/cli-utils/pkg/object"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,8 +47,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/ratelimiter"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
+	"github.com/fluxcd/cli-utils/pkg/object"
 	apiacl "github.com/fluxcd/pkg/apis/acl"
 	eventv1 "github.com/fluxcd/pkg/apis/event/v1beta1"
 	"github.com/fluxcd/pkg/apis/meta"
@@ -57,6 +58,7 @@ import (
 	runtimeClient "github.com/fluxcd/pkg/runtime/client"
 	"github.com/fluxcd/pkg/runtime/conditions"
 	runtimeCtrl "github.com/fluxcd/pkg/runtime/controller"
+	"github.com/fluxcd/pkg/runtime/jitter"
 	"github.com/fluxcd/pkg/runtime/patch"
 	"github.com/fluxcd/pkg/runtime/predicates"
 	"github.com/fluxcd/pkg/ssa"
@@ -82,27 +84,30 @@ type CueReconciler struct {
 	kuberecorder.EventRecorder
 	runtimeCtrl.Metrics
 
-	artifactFetcher       *fetch.ArchiveFetcher
-	requeueDependency     time.Duration
-	StatusPoller          *polling.StatusPoller
-	PollingOpts           polling.Options
-	ControllerName        string
-	statusManager         string
-	NoCrossNamespaceRefs  bool
-	NoRemoteBases         bool
-	DefaultServiceAccount string
-	KubeConfigOpts        runtimeClient.KubeConfigOptions
+	artifactFetchRetries int
+	requeueDependency    time.Duration
+
+	StatusPoller            *polling.StatusPoller
+	PollingOpts             polling.Options
+	ControllerName          string
+	statusManager           string
+	NoCrossNamespaceRefs    bool
+	NoRemoteBases           bool
+	FailFast                bool
+	DefaultServiceAccount   string
+	KubeConfigOpts          runtimeClient.KubeConfigOptions
+	ConcurrentSSA           int
+	DisallowedFieldManagers []string
 }
 
 // CueReconcilerOptions contains options for the CueReconciler.
 type CueReconcilerOptions struct {
-	MaxConcurrentReconciles   int
 	HTTPRetry                 int
 	DependencyRequeueInterval time.Duration
 	RateLimiter               ratelimiter.RateLimiter
 }
 
-func (r *CueReconciler) SetupWithManager(mgr ctrl.Manager, opts CueReconcilerOptions) error {
+func (r *CueReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, opts CueReconcilerOptions) error {
 	const (
 		ociRepositoryIndexKey string = ".metadata.ociRepository"
 		gitRepositoryIndexKey string = ".metadata.gitRepository"
@@ -110,56 +115,48 @@ func (r *CueReconciler) SetupWithManager(mgr ctrl.Manager, opts CueReconcilerOpt
 	)
 
 	// Index the CueExports by the OCIRepository references they (may) point at.
-	if err := mgr.GetCache().IndexField(context.TODO(), &cuev1.CueExport{}, ociRepositoryIndexKey,
+	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, ociRepositoryIndexKey,
 		r.indexBy(sourcev1b2.OCIRepositoryKind)); err != nil {
 		return fmt.Errorf("failed setting index fields: %w", err)
 	}
 
 	// Index the CueExports by the GitRepository references they (may) point at.
-	if err := mgr.GetCache().IndexField(context.TODO(), &cuev1.CueExport{}, gitRepositoryIndexKey,
+	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, gitRepositoryIndexKey,
 		r.indexBy(sourcev1.GitRepositoryKind)); err != nil {
 		return fmt.Errorf("failed setting index fields: %w", err)
 	}
 
 	// Index the CueExports by the Bucket references they (may) point at.
-	if err := mgr.GetCache().IndexField(context.TODO(), &cuev1.CueExport{}, bucketIndexKey,
+	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, bucketIndexKey,
 		r.indexBy(sourcev1b2.BucketKind)); err != nil {
 		return fmt.Errorf("failed setting index fields: %w", err)
 	}
 
 	r.requeueDependency = opts.DependencyRequeueInterval
 	r.statusManager = fmt.Sprintf("gotk-%s", r.ControllerName)
-	r.artifactFetcher = fetch.NewArchiveFetcher(
-		opts.HTTPRetry,
-		tar.UnlimitedUntarSize,
-		tar.UnlimitedUntarSize,
-		os.Getenv("SOURCE_CONTROLLER_LOCALHOST"),
-	)
+	r.artifactFetchRetries = opts.HTTPRetry
 
-	recoverPanic := true
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&cuev1.CueExport{}, builder.WithPredicates(
 			predicate.Or(predicate.GenerationChangedPredicate{}, predicates.ReconcileRequestedPredicate{}),
 		)).
 		Watches(
-			&source.Kind{Type: &sourcev1b2.OCIRepository{}},
+			&sourcev1b2.OCIRepository{},
 			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(ociRepositoryIndexKey)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
 		Watches(
-			&source.Kind{Type: &sourcev1.GitRepository{}},
+			&sourcev1.GitRepository{},
 			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(gitRepositoryIndexKey)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
 		Watches(
-			&source.Kind{Type: &sourcev1b2.Bucket{}},
+			&sourcev1b2.Bucket{},
 			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(bucketIndexKey)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
 		WithOptions(controller.Options{
-			MaxConcurrentReconciles: opts.MaxConcurrentReconciles,
-			RateLimiter:             opts.RateLimiter,
-			RecoverPanic:            &recoverPanic,
+			RateLimiter: opts.RateLimiter,
 		}).
 		Complete(r)
 }
@@ -201,16 +198,18 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 		}
 	}()
 
-	// Add finalizer first if it doesn't exist to avoid the race condition
-	// between init and delete.
-	if !controllerutil.ContainsFinalizer(obj, cuev1.CueExportFinalizer) {
-		controllerutil.AddFinalizer(obj, cuev1.CueExportFinalizer)
-		return ctrl.Result{Requeue: true}, nil
-	}
-
 	// Prune managed resources if the object is under deletion.
 	if !obj.ObjectMeta.DeletionTimestamp.IsZero() {
 		return r.finalize(ctx, obj)
+	}
+
+	// Add finalizer first if it doesn't exist to avoid the race condition
+	// between init and delete.
+	// Note: Finalizers in general can only be added when the deletionTimestamp
+	// is not set.
+	if !controllerutil.ContainsFinalizer(obj, cuev1.CueExportFinalizer) {
+		controllerutil.AddFinalizer(obj, cuev1.CueExportFinalizer)
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Skip reconciliation if the object is suspended.
@@ -243,10 +242,10 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 
 	// Requeue the reconciliation if the source artifact is not found.
 	if artifactSource.GetArtifact() == nil {
-		msg := "Source is not ready, artifact not found"
+		msg := fmt.Sprintf("Source artifact not found, retrying in %s", r.requeueDependency.String())
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, msg)
 		log.Info(msg)
-		return ctrl.Result{RequeueAfter: obj.GetRetryInterval()}, nil
+		return ctrl.Result{RequeueAfter: r.requeueDependency}, nil
 	}
 
 	// Check dependencies and requeue the reconciliation if the check fails.
@@ -265,7 +264,7 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 	reconcileErr := r.reconcile(ctx, obj, artifactSource, patcher)
 
 	// Requeue at the specified retry interval if the artifact tarball is not found.
-	if reconcileErr == fetch.FileNotFoundError {
+	if errors.Is(reconcileErr, fetch.ErrFileNotFound) {
 		msg := fmt.Sprintf("Source is not ready, artifact not found, retrying in %s", r.requeueDependency.String())
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, msg)
 		log.Info(msg)
@@ -285,7 +284,7 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 	}
 
 	// Requeue the reconciliation at the specified interval.
-	return ctrl.Result{RequeueAfter: obj.Spec.Interval.Duration}, nil
+	return ctrl.Result{RequeueAfter: jitter.JitteredIntervalDuration(obj.GetRequeueAfter())}, nil
 }
 
 func (r *CueReconciler) reconcile(
@@ -300,7 +299,7 @@ func (r *CueReconciler) reconcile(
 	conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "Reconciliation in progress")
 	conditions.MarkReconciling(obj, meta.ProgressingReason, progressingMsg)
 	if err := r.patch(ctx, obj, patcher); err != nil {
-		return fmt.Errorf("failed to update status, error: %w", err)
+		return fmt.Errorf("failed to update status: %w", err)
 	}
 
 	// Create a snapshot of the current inventory.
@@ -320,8 +319,13 @@ func (r *CueReconciler) reconcile(
 	defer os.RemoveAll(tmpDir)
 
 	// Download artifact and extract files to the tmp dir.
-	err = r.artifactFetcher.Fetch(src.GetArtifact().URL, src.GetArtifact().Digest, tmpDir)
-	if err != nil {
+	if err = fetch.NewArchiveFetcherWithLogger(
+		r.artifactFetchRetries,
+		tar.UnlimitedUntarSize,
+		tar.UnlimitedUntarSize,
+		os.Getenv("SOURCE_CONTROLLER_LOCALHOST"),
+		ctrl.LoggerFrom(ctx),
+	).Fetch(src.GetArtifact().URL, src.GetArtifact().Digest, tmpDir); err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
 		return err
 	}
@@ -335,7 +339,6 @@ func (r *CueReconciler) reconcile(
 	if _, err := os.Stat(moduleRootPath); err != nil {
 		err = fmt.Errorf("root path not found: %w", err)
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
-		return err
 	}
 
 	// check build path exists
@@ -358,7 +361,7 @@ func (r *CueReconciler) reconcile(
 	progressingMsg = fmt.Sprintf("Building manifests for revision %s with a timeout of %s", revision, obj.GetTimeout().String())
 	conditions.MarkReconciling(obj, meta.ProgressingReason, progressingMsg)
 	if err := r.patch(ctx, obj, patcher); err != nil {
-		return fmt.Errorf("failed to update status, error: %w", err)
+		return fmt.Errorf("failed to update status: %w", err)
 	}
 
 	// Configure the Kubernetes client for impersonation.
@@ -404,12 +407,13 @@ func (r *CueReconciler) reconcile(
 		Group: cuev1.GroupVersion.Group,
 	})
 	resourceManager.SetOwnerLabels(objects, obj.GetName(), obj.GetNamespace())
+	resourceManager.SetConcurrency(r.ConcurrentSSA)
 
 	// Update status with the reconciliation progress.
 	progressingMsg = fmt.Sprintf("Detecting drift for revision %s with a timeout of %s", revision, obj.GetTimeout().String())
 	conditions.MarkReconciling(obj, meta.ProgressingReason, progressingMsg)
 	if err := r.patch(ctx, obj, patcher); err != nil {
-		return fmt.Errorf("failed to update status, error: %w", err)
+		return fmt.Errorf("failed to update status: %w", err)
 	}
 
 	// Validate and apply resources in stages.
@@ -494,8 +498,17 @@ func (r *CueReconciler) checkDependencies(ctx context.Context,
 			return fmt.Errorf("dependency '%s' is not ready", dName)
 		}
 
+		srcNamespace := k.Spec.SourceRef.Namespace
+		if srcNamespace == "" {
+			srcNamespace = k.GetNamespace()
+		}
+		dSrcNamespace := obj.Spec.SourceRef.Namespace
+		if dSrcNamespace == "" {
+			dSrcNamespace = obj.GetNamespace()
+		}
+
 		if k.Spec.SourceRef.Name == obj.Spec.SourceRef.Name &&
-			k.Spec.SourceRef.Namespace == obj.Spec.SourceRef.Namespace &&
+			srcNamespace == dSrcNamespace &&
 			k.Spec.SourceRef.Kind == obj.Spec.SourceRef.Kind &&
 			!source.GetArtifact().HasRevision(k.Status.LastAppliedRevision) {
 			return fmt.Errorf("dependency '%s' revision is not up to date", dName)
@@ -777,13 +790,56 @@ func (r *CueReconciler) apply(ctx context.Context,
 		return false, nil, err
 	}
 
+	if meta := obj.Spec.CommonMetadata; meta != nil {
+		ssautil.SetCommonMetadata(objects, meta.Labels, meta.Annotations)
+	}
+
 	applyOpts := ssa.DefaultApplyOptions()
 	applyOpts.Force = obj.Spec.Force
 	applyOpts.ExclusionSelector = map[string]string{
 		fmt.Sprintf("%s/reconcile", cuev1.GroupVersion.Group): cuev1.DisabledValue,
+		fmt.Sprintf("%s/ssa", cuev1.GroupVersion.Group):       cuev1.IgnoreValue,
+	}
+	applyOpts.IfNotPresentSelector = map[string]string{
+		fmt.Sprintf("%s/ssa", cuev1.GroupVersion.Group): cuev1.IfNotPresentValue,
 	}
 	applyOpts.ForceSelector = map[string]string{
 		fmt.Sprintf("%s/force", cuev1.GroupVersion.Group): cuev1.EnabledValue,
+	}
+
+	fieldManagers := []ssa.FieldManager{
+		{
+			// to undo changes made with 'kubectl apply --server-side --force-conflicts'
+			Name:          "kubectl",
+			OperationType: metav1.ManagedFieldsOperationApply,
+		},
+		{
+			// to undo changes made with 'kubectl apply'
+			Name:          "kubectl",
+			OperationType: metav1.ManagedFieldsOperationUpdate,
+		},
+		{
+			// to undo changes made with 'kubectl apply'
+			Name:          "before-first-apply",
+			OperationType: metav1.ManagedFieldsOperationUpdate,
+		},
+		{
+			// to undo changes made by the controller before SSA
+			Name:          r.ControllerName,
+			OperationType: metav1.ManagedFieldsOperationUpdate,
+		},
+	}
+
+	for _, fieldManager := range r.DisallowedFieldManagers {
+		fieldManagers = append(fieldManagers, ssa.FieldManager{
+			Name:          fieldManager,
+			OperationType: metav1.ManagedFieldsOperationApply,
+		})
+		// to undo changes made by the controller before SSA
+		fieldManagers = append(fieldManagers, ssa.FieldManager{
+			Name:          fieldManager,
+			OperationType: metav1.ManagedFieldsOperationUpdate,
+		})
 	}
 
 	applyOpts.Cleanup = ssa.ApplyCleanupOptions{
@@ -791,28 +847,7 @@ func (r *CueReconciler) apply(ctx context.Context,
 			// remove the kubectl annotation
 			corev1.LastAppliedConfigAnnotation,
 		},
-		FieldManagers: []ssa.FieldManager{
-			{
-				// to undo changes made with 'kubectl apply --server-side --force-conflicts'
-				Name:          "kubectl",
-				OperationType: metav1.ManagedFieldsOperationApply,
-			},
-			{
-				// to undo changes made with 'kubectl apply'
-				Name:          "kubectl",
-				OperationType: metav1.ManagedFieldsOperationUpdate,
-			},
-			{
-				// to undo changes made with 'kubectl apply'
-				Name:          "before-first-apply",
-				OperationType: metav1.ManagedFieldsOperationUpdate,
-			},
-			{
-				// to undo changes made by the controller before SSA
-				Name:          r.ControllerName,
-				OperationType: metav1.ManagedFieldsOperationUpdate,
-			},
-		},
+		FieldManagers: fieldManagers,
 		Exclusions: map[string]string{
 			fmt.Sprintf("%s/ssa", cuev1.GroupVersion.Group): cuev1.MergeValue,
 		},
@@ -822,7 +857,7 @@ func (r *CueReconciler) apply(ctx context.Context,
 	var defStage []*unstructured.Unstructured
 
 	// contains only Kubernetes Class types e.g.: RuntimeClass, PriorityClass,
-	// StorageClas, VolumeSnapshotClass, IngressClass, GatewayClass, ClusterClass, etc
+	// StorageClass, VolumeSnapshotClass, IngressClass, GatewayClass, ClusterClass, etc
 	var classStage []*unstructured.Unstructured
 
 	// contains all objects except for CRDs, Namespaces and Class type objects
@@ -833,7 +868,7 @@ func (r *CueReconciler) apply(ctx context.Context,
 
 	for _, u := range objects {
 		switch {
-		case ssa.IsClusterDefinition(u):
+		case ssautil.IsClusterDefinition(u):
 			defStage = append(defStage, u)
 		case strings.HasSuffix(u.GetKind(), "Class"):
 			classStage = append(classStage, u)
@@ -851,12 +886,13 @@ func (r *CueReconciler) apply(ctx context.Context,
 		if err != nil {
 			return false, nil, err
 		}
-		resultSet.Append(changeSet.Entries)
 
 		if changeSet != nil && len(changeSet.Entries) > 0 {
+			resultSet.Append(changeSet.Entries)
+
 			log.Info("server-side apply for cluster definitions completed", "output", changeSet.ToMap())
 			for _, change := range changeSet.Entries {
-				if change.Action != ssa.UnchangedAction {
+				if HasChanged(change.Action) {
 					changeSetLog.WriteString(change.String() + "\n")
 				}
 			}
@@ -876,12 +912,13 @@ func (r *CueReconciler) apply(ctx context.Context,
 		if err != nil {
 			return false, nil, err
 		}
-		resultSet.Append(changeSet.Entries)
 
 		if changeSet != nil && len(changeSet.Entries) > 0 {
+			resultSet.Append(changeSet.Entries)
+
 			log.Info("server-side apply for cluster class types completed", "output", changeSet.ToMap())
 			for _, change := range changeSet.Entries {
-				if change.Action != ssa.UnchangedAction {
+				if HasChanged(change.Action) {
 					changeSetLog.WriteString(change.String() + "\n")
 				}
 			}
@@ -902,12 +939,13 @@ func (r *CueReconciler) apply(ctx context.Context,
 		if err != nil {
 			return false, nil, fmt.Errorf("%w\n%s", err, changeSetLog.String())
 		}
-		resultSet.Append(changeSet.Entries)
 
 		if changeSet != nil && len(changeSet.Entries) > 0 {
+			resultSet.Append(changeSet.Entries)
+
 			log.Info("server-side apply completed", "output", changeSet.ToMap(), "revision", revision)
 			for _, change := range changeSet.Entries {
-				if change.Action != ssa.UnchangedAction {
+				if HasChanged(change.Action) {
 					changeSetLog.WriteString(change.String() + "\n")
 				}
 			}
@@ -969,17 +1007,18 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 	conditions.MarkReconciling(obj, meta.ProgressingReason, message)
 	conditions.MarkUnknown(obj, cuev1.HealthyCondition, meta.ProgressingReason, message)
 	if err := r.patch(ctx, obj, patcher); err != nil {
-		return fmt.Errorf("unable to update the healthy status to progressing, error: %w", err)
+		return fmt.Errorf("unable to update the healthy status to progressing: %w", err)
 	}
 
 	// Check the health with a default timeout of 30sec shorter than the reconciliation interval.
 	if err := manager.WaitForSet(toCheck, ssa.WaitOptions{
 		Interval: 5 * time.Second,
 		Timeout:  obj.GetTimeout(),
+		FailFast: r.FailFast,
 	}); err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.HealthCheckFailedReason, err.Error())
 		conditions.MarkFalse(obj, cuev1.HealthyCondition, cuev1.HealthCheckFailedReason, err.Error())
-		return fmt.Errorf("Health check failed after %s: %w", time.Since(checkStart).String(), err)
+		return fmt.Errorf("health check failed after %s: %w", time.Since(checkStart).String(), err)
 	}
 
 	// Emit recovery event if the previous health check failed.
@@ -990,7 +1029,7 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 
 	conditions.MarkTrue(obj, cuev1.HealthyCondition, meta.SucceededReason, msg)
 	if err := r.patch(ctx, obj, patcher); err != nil {
-		return fmt.Errorf("unable to update the healthy status to progressing, error: %w", err)
+		return fmt.Errorf("unable to update the healthy status to progressing: %w", err)
 	}
 
 	return nil
@@ -1082,7 +1121,7 @@ func (r *CueReconciler) finalize(ctx context.Context,
 			}
 		} else {
 			// when the account to impersonate is gone, log the stale objects and continue with the finalization
-			msg := fmt.Sprintf("unable to prune objects: \n%s", ssa.FmtUnstructuredList(objects))
+			msg := fmt.Sprintf("unable to prune objects: \n%s", ssautil.FmtUnstructuredList(objects))
 			log.Error(fmt.Errorf("skiping pruning, failed to find account to impersonate"), msg)
 			r.event(obj, obj.Status.LastAppliedRevision, eventv1.EventSeverityError, msg, nil)
 		}

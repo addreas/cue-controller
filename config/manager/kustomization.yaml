@@ -5,4 +5,4 @@ resources:
 images:
   - name: ghcr.io/addreas/cue-controller
     newName: ghcr.io/addreas/cue-controller
-    newTag: v1.0.0-rc.cue1
+    newTag: v1.4.0-cue

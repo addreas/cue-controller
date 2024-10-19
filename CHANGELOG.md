@@ -2,6 +2,283 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.2.2
+
+**Release date:** 2024-02-01
+
+This patch release comes with various bug fixes and improvements.
+
+Reconciling empty directories and directories without Kubernetes manifests no
+longer results in an error. This regressing bug was introduced with the
+controller upgrade to Kustomize v5.3 and has been fixed in this patch release.
+
+The regression due to which the namespaced objects without a namespace specified
+resulted in `not found` error instead of `namespace not specified` has also been
+fixed. And the regression due to which Roles and ClusterRoles were reconciled
+over and over due to the normalization of Roles and ClusterRoles has also been
+fixed.
+
+In addition, the Kubernetes dependencies have been updated to v1.28.6. Various
+other dependencies have also been updated to their latest version to patch
+upstream CVEs.
+
+Lastly, the controller is now built with Go 1.21.
+
+Improvements:
+- Update Go to 1.21
+  [#1053](https://github.com/fluxcd/kustomize-controller/pull/1053)
+- Various dependency updates
+  [#1076](https://github.com/fluxcd/kustomize-controller/pull/1076)
+  [#1074](https://github.com/fluxcd/kustomize-controller/pull/1074)
+  [#1070](https://github.com/fluxcd/kustomize-controller/pull/1070)
+  [#1068](https://github.com/fluxcd/kustomize-controller/pull/1068)
+  [#1065](https://github.com/fluxcd/kustomize-controller/pull/1065)
+  [#1060](https://github.com/fluxcd/kustomize-controller/pull/1060)
+  [#1059](https://github.com/fluxcd/kustomize-controller/pull/1059)
+  [#1051](https://github.com/fluxcd/kustomize-controller/pull/1051)
+  [#1049](https://github.com/fluxcd/kustomize-controller/pull/1049)
+  [#1046](https://github.com/fluxcd/kustomize-controller/pull/1046)
+  [#1044](https://github.com/fluxcd/kustomize-controller/pull/1044)
+  [#1040](https://github.com/fluxcd/kustomize-controller/pull/1040)
+  [#1038](https://github.com/fluxcd/kustomize-controller/pull/1038)
+
+## 1.2.1
+
+**Release date:** 2023-12-14
+
+This patch release comes with improvements in logging to provide faster feedback
+on any HTTP errors encountered while fetching source artifacts.
+
+In addition, the status condition messages are now trimmed to respect the size
+limit defined by the API.
+
+Improvements:
+- Update runtime to v0.43.3
+  [#1031](https://github.com/fluxcd/kustomize-controller/pull/1031)
+- Log HTTP errors to provide faster feedback
+  [#1028](https://github.com/fluxcd/kustomize-controller/pull/1028)
+
+## 1.2.0
+
+**Release date:** 2023-12-11
+
+This minor release comes with performance improvements, bug fixes and several new features.
+
+The controller has been updated from Kustomize v5.0 to **v5.3**, please the see
+`kubernetes-sigs/kustomize` [changelog](https://github.com/kubernetes-sigs/kustomize/releases)
+for a more details.
+
+Starting with this version, the controller will automatically perform a cleanup of
+the Pods belonging to stale Kubernetes Jobs after a force apply.
+
+A new controller flag `--override-manager` has been added to extend the Field Managers disallow list.
+Using this flag, cluster administrators can configure the controller to undo changes
+made with Lens and other UI tools that directly modify Kubernetes objects on clusters.
+
+In addition, the controller dependencies have been updated, including an update to Kubernetes v1.28.
+The container base image has been updated to Alpine 3.19.
+
+Improvements:
+- Update source-controller to v1.2.2
+  [#1024](https://github.com/fluxcd/kustomize-controller/pull/1024)
+- build: update Alpine to 3.19
+  [#1023](https://github.com/fluxcd/kustomize-controller/pull/1023)
+- Update Kustomize to v5.3.0
+  [#1021](https://github.com/fluxcd/kustomize-controller/pull/1021)
+- Support additional Field Managers in the disallow list
+  [#1017](https://github.com/fluxcd/kustomize-controller/pull/1017)
+- Add test for Namespace custom resource
+  [#1016](https://github.com/fluxcd/kustomize-controller/pull/1016)
+- Update controller to Kubernetes v1.28.4
+  [#1014](https://github.com/fluxcd/kustomize-controller/pull/1014)
+- Disable status poller cache by default
+  [#1012](https://github.com/fluxcd/kustomize-controller/pull/1012)
+- Tweak permissions on various created files
+  [#1005](https://github.com/fluxcd/kustomize-controller/pull/1005)
+- Cleanup pods when recreating Kubernetes Jobs
+  [#997](https://github.com/fluxcd/kustomize-controller/pull/997)
+- Update SOPS to v3.8.1
+  [#995](https://github.com/fluxcd/kustomize-controller/pull/995)
+
+## 1.1.1
+
+**Release date:** 2023-10-11
+
+This patch release contains an improvement to retry the reconciliation of a
+`Kustomization` as soon as the source artifact is available in storage.
+Which is particularly useful when the source-controller has just been upgraded.
+
+In addition, the controller can now detect immutable field errors returned by the
+Google Cloud k8s-config-connector admission controller and recreate the GCP custom
+resources annotated with `kustomize.toolkit.fluxcd.io/force: Enabled`.
+
+Improvements:
+- Update `fluxcd/pkg` dependencies
+  [#983](https://github.com/fluxcd/kustomize-controller/pull/983)
+- Bump `github.com/cyphar/filepath-securejoi`n from 0.2.3 to 0.2.4
+  [#962](https://github.com/fluxcd/kustomize-controller/pull/962)
+
+Fixes:
+- fix: Retry when artifacts are available in storage
+  [#980](https://github.com/fluxcd/kustomize-controller/pull/980)
+- fix: Consistent artifact fetching retry timing
+  [#978](https://github.com/fluxcd/kustomize-controller/pull/978)
+
+## 1.1.0
+
+**Release date:** 2023-08-23
+
+This minor release comes with performance improvements, bug fixes and several new features.
+
+The apply behaviour has been extended with two policies `IfNotPresent` and `Ignore`.
+To change the apply behaviour for specific Kubernetes resources, you can annotate them with:
+
+| Annotation                          | Default    | Values                                                         | Role            |
+|-------------------------------------|------------|----------------------------------------------------------------|-----------------|
+| `kustomize.toolkit.fluxcd.io/ssa`   | `Override` | - `Override`<br/>- `Merge`<br/>- `IfNotPresent`<br/>- `Ignore` | Apply policy    |
+| `kustomize.toolkit.fluxcd.io/force` | `Disabled` | - `Enabled`<br/>- `Disabled`                                   | Recreate policy |
+| `kustomize.toolkit.fluxcd.io/prune` | `Enabled`  | - `Enabled`<br/>- `Disabled`                                   | Delete policy   |
+
+The `IfNotPresent` policy instructs the controller to only apply the Kubernetes resources if they are not present on the cluster.
+This policy can be used for Kubernetes `Secrets` and `ValidatingWebhookConfigurations` managed by cert-manager,
+where Flux creates the resources with fields that are later on mutated by other controllers.
+
+This version improves the health checking with fail-fast behaviour
+by detecting stalled Kubernetes rollouts.
+
+In addition, the controller now stops exporting an object's
+metrics as soon as the object has been deleted.
+
+Lastly, this release introduces two controller flags:
+
+- The `--concurrent-ssa` flag sets the number of concurrent server-side apply operations
+  performed by the controller. Defaults to 4 concurrent operations per reconciliation.
+- The `--interval-jitter-percentage` flag makes the
+  controller distribute the load more evenly when multiple objects are set up
+  with the same interval. The default of this flag is set to `5`, which means
+  that the interval will be jittered by a +/- 5% random value (e.g. if the
+  interval is 10 minutes, the actual reconciliation interval will be between 9.5
+  and 10.5 minutes).
+
+Improvements:
+- Add `--concurrent-ssa` flag
+  [#948](https://github.com/fluxcd/kustomize-controller/pull/948)
+- Add `IfNotPresent` and `Ignore` SSA policies
+  [#943](https://github.com/fluxcd/kustomize-controller/pull/943)
+- controller: jitter requeue interval
+  [#940](https://github.com/fluxcd/kustomize-controller/pull/940)
+- Enable fail-fast behavior for health checks
+  [#933](https://github.com/fluxcd/kustomize-controller/pull/933)
+- Bump `fluxcd/pkg/ssa` to improve immutable error detection
+  [#932](https://github.com/fluxcd/kustomize-controller/pull/932)
+- Update dependencies
+  [#939](https://github.com/fluxcd/kustomize-controller/pull/939)
+- Update Source API to v1.1.0
+  [#952](https://github.com/fluxcd/kustomize-controller/pull/952)
+
+Fixes:
+- Handle delete before adding finalizer
+  [#930](https://github.com/fluxcd/kustomize-controller/pull/930)
+- Delete stale metrics on object delete
+  [#944](https://github.com/fluxcd/kustomize-controller/pull/944)
+
+## 1.0.1
+
+**Release date:** 2023-07-10
+
+This is a patch release that fixes spurious events emitted for skipped resources.
+
+Fixes:
+- Exclude skipped resources from apply events
+  [#920](https://github.com/fluxcd/kustomize-controller/pull/920)
+
+## 1.0.0
+
+**Release date:** 2023-07-04
+
+This is the first stable release of the controller. From now on, this controller
+follows the [Flux 2 release cadence and support pledge](https://fluxcd.io/flux/releases/).
+
+Starting with this version, the build, release and provenance portions of the
+Flux project supply chain [provisionally meet SLSA Build Level 3](https://fluxcd.io/flux/security/slsa-assessment/).
+
+This release includes several bug fixes. In addition, dependencies have been updated
+to their latest version, including an update of Kubernetes to v1.27.3.
+
+For a comprehensive list of changes since `v0.35.x`, please refer to the
+changelog for [v1.0.0-rc.1](#100-rc1), [v1.0.0-rc.2](#100-rc2),
+[v1.0.0-rc.3](#100-rc3) and [`v1.0.0-rc.4](#100-rc4).
+
+Improvements:
+- Update dependencies
+  [#908](https://github.com/fluxcd/kustomize-controller/pull/908)
+- Align `go.mod` version with Kubernetes (Go 1.20)
+  [#900](https://github.com/fluxcd/kustomize-controller/pull/900)
+
+Fixes:
+- Use kustomization namespace for empty dependency source namespace
+  [#897](https://github.com/fluxcd/kustomize-controller/pull/897)
+- docs: Clarify that targetNamespace namespace can be part of resources
+  [#896](https://github.com/fluxcd/kustomize-controller/pull/896)
+
+## 1.0.0-rc.4
+
+**Release date:** 2023-05-29
+
+This release candidate comes with support for Kustomize v5.0.3.
+
+⚠️ Note that Kustomize v5 contains breaking changes, please consult their
+[changelog](https://github.com/kubernetes-sigs/kustomize/releases/tag/kustomize%2Fv5.0.0)
+for more details.
+
+In addition, the controller dependencies have been updated to
+Kubernetes v1.27.2 and controller-runtime v0.15.0.
+
+Improvements:
+- Update Kubernetes to v1.27 and Kustomize to v5
+  [#850](https://github.com/fluxcd/kustomize-controller/pull/850)
+- Update controller-runtime to v0.15.0
+  [#869](https://github.com/fluxcd/kustomize-controller/pull/869)
+- Update CA certificates
+  [#872](https://github.com/fluxcd/kustomize-controller/pull/872)
+- Update source-controller to v1.0.0-rc.4
+  [#873](https://github.com/fluxcd/kustomize-controller/pull/873)
+
+## 1.0.0-rc.3
+
+**Release date:** 2023-05-12
+
+This release candidate comes with improved error reporting for when
+the controller fails to fetch an artifact due to a checksum mismatch.
+
+In addition, the controller dependencies have been updated to patch
+CVE-2023-1732 and the base image has been updated to Alpine 3.18.
+
+Improvements:
+- Update Alpine to 3.18
+  [#855](https://github.com/fluxcd/kustomize-controller/pull/855)
+- Update dependencies
+  [#862](https://github.com/fluxcd/kustomize-controller/pull/862)
+- build(deps): bump github.com/cloudflare/circl from 1.1.0 to 1.3.3
+  [#860](https://github.com/fluxcd/kustomize-controller/pull/860)
+- docs: Clarify the Kustomize components relative paths requirement
+  [#861](https://github.com/fluxcd/kustomize-controller/pull/861)
+
+## 1.0.0-rc.2
+
+**Release date:** 2023-05-09
+
+This release candidate fixes secrets decryption when using Azure Key Vault.
+
+In addition, the controller dependencies have been updated to their latest
+versions.
+
+Improvements:
+- Fix SOPS azkv envCred
+  [#838](https://github.com/fluxcd/kustomize-controller/pull/838)
+- Update dependencies
+  [#853](https://github.com/fluxcd/kustomize-controller/pull/853)
+
 ## 1.0.0-rc.1
 
 **Release date:** 2023-04-03
