@@ -62,6 +62,7 @@ import (
 	"github.com/fluxcd/pkg/runtime/patch"
 	"github.com/fluxcd/pkg/runtime/predicates"
 	"github.com/fluxcd/pkg/ssa"
+	"github.com/fluxcd/pkg/ssa/normalize"
 	"github.com/fluxcd/pkg/tar"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 	sourcev1b2 "github.com/fluxcd/source-controller/api/v1beta2"
@@ -383,19 +384,19 @@ func (r *CueReconciler) reconcile(
 		return fmt.Errorf("failed to build kube client: %w", err)
 	}
 
-	values, err := r.values(ctx, revision, moduleRootPath, obj)
+	values, err := r.values(ctx, moduleRootPath, obj)
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.BuildFailedReason, err.Error())
 		return err
 	}
 
-	objects, err := r.build(ctx, revision, values, obj)
+	objects, err := r.build(ctx, values, obj)
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.BuildFailedReason, err.Error())
 		return err
 	}
 
-	err = r.checkGates(ctx, revision, values, obj)
+	err = r.checkGates(ctx, values, obj)
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.GateFailedReason, err.Error())
 		return err
@@ -473,9 +474,7 @@ func (r *CueReconciler) reconcile(
 	return nil
 }
 
-func (r *CueReconciler) checkDependencies(ctx context.Context,
-	obj *cuev1.CueExport,
-	source sourcev1.Source) error {
+func (r *CueReconciler) checkDependencies(ctx context.Context, obj *cuev1.CueExport, source sourcev1.Source) error {
 	for _, d := range obj.Spec.DependsOn {
 		if d.Namespace == "" {
 			d.Namespace = obj.GetNamespace()
@@ -518,8 +517,7 @@ func (r *CueReconciler) checkDependencies(ctx context.Context,
 	return nil
 }
 
-func (r *CueReconciler) getSource(ctx context.Context,
-	obj *cuev1.CueExport) (sourcev1.Source, error) {
+func (r *CueReconciler) getSource(ctx context.Context, obj *cuev1.CueExport) (sourcev1.Source, error) {
 	var src sourcev1.Source
 	sourceNamespace := obj.GetNamespace()
 	if obj.Spec.SourceRef.Namespace != "" {
@@ -574,16 +572,13 @@ func (r *CueReconciler) getSource(ctx context.Context,
 	return src, nil
 }
 
-func (r *CueReconciler) values(ctx context.Context,
-	revision, root string,
-	obj *cuev1.CueExport,
-) ([]cue.Value, error) {
+func (r *CueReconciler) values(ctx context.Context, root string, obj *cuev1.CueExport) ([]cue.Value, error) {
 	cctx := cuecontext.New()
 
 	tags := make([]string, 0, len(obj.Spec.Tags))
 	for _, t := range obj.Spec.Tags {
 		if t.ValueFrom != nil {
-			val, err := getValueFromSource(t.ValueFrom)
+			val, err := r.getValueFromSource(ctx, obj.Namespace, t.ValueFrom)
 			if err != nil {
 				return nil, err
 			}
@@ -601,10 +596,6 @@ func (r *CueReconciler) values(ctx context.Context,
 		Package:    obj.Spec.Package,
 		Tags:       tags,
 		TagVars:    load.DefaultTagVars(),
-
-		Module:      "",    // TODO: add to api spec
-		DataFiles:   false, // TODO: add to api sepc
-		AllCUEFiles: false, // TODO: add to api sepc
 	}
 
 	ix := load.Instances(obj.Spec.Paths, cfg)
@@ -623,8 +614,37 @@ func (r *CueReconciler) values(ctx context.Context,
 	return values, nil
 }
 
-func getValueFromSource(tagvar *cuev1.TagVarSource) (string, error) {
-	return "", fmt.Errorf("todo")
+func (r *CueReconciler) getValueFromSource(ctx context.Context, namespace string, tagvar *cuev1.TagVarSource) (string, error) {
+	if tagvar.ConfigMapKeyRef != nil {
+		ref := types.NamespacedName{
+			Namespace: namespace,
+			Name:      tagvar.ConfigMapKeyRef.Name,
+		}
+		var cm corev1.ConfigMap
+		if err := r.Get(ctx, ref, &cm); err != nil {
+			return "", fmt.Errorf("failed to get configmap: %w", err)
+		}
+		val, ok := cm.Data[tagvar.ConfigMapKeyRef.Key]
+		if !ok {
+			return "", fmt.Errorf("missing key %s in ConfigMap %s", tagvar.ConfigMapKeyRef.Key, tagvar.ConfigMapKeyRef.Name)
+		}
+		return val, nil
+	} else if tagvar.SecretKeyRef != nil {
+		ref := types.NamespacedName{
+			Namespace: namespace,
+			Name:      tagvar.SecretKeyRef.Name,
+		}
+		var cm corev1.Secret
+		if err := r.Get(ctx, ref, &cm); err != nil {
+			return "", fmt.Errorf("failed to get secret: %w", err)
+		}
+		val, ok := cm.Data[tagvar.SecretKeyRef.Key]
+		if !ok {
+			return "", fmt.Errorf("missing key %s in Secret %s", tagvar.SecretKeyRef.Key, tagvar.SecretKeyRef.Name)
+		}
+		return string(val), nil
+	}
+	return "", fmt.Errorf("either ConfigMap or Secret has to be specified")
 }
 
 var (
@@ -633,10 +653,7 @@ var (
 	metadataNamePath = cue.ParsePath("metadata.name")
 )
 
-func (r *CueReconciler) build(ctx context.Context,
-	revision string, values []cue.Value,
-	obj *cuev1.CueExport,
-) ([]*unstructured.Unstructured, error) {
+func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev1.CueExport) ([]*unstructured.Unstructured, error) {
 	log := ctrl.LoggerFrom(ctx)
 	timeout := obj.GetTimeout()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -704,10 +721,7 @@ func (r *CueReconciler) build(ctx context.Context,
 	return objects, nil
 }
 
-func (r *CueReconciler) checkGates(ctx context.Context,
-	revision string, values []cue.Value,
-	obj *cuev1.CueExport,
-) error {
+func (r *CueReconciler) checkGates(ctx context.Context, values []cue.Value, obj *cuev1.CueExport) error {
 	log := ctrl.LoggerFrom(ctx)
 
 	var errors []error
@@ -775,7 +789,7 @@ func unstructuredListFromValues(value cue.Value) ([]*unstructured.Unstructured, 
 		}
 		return objects, kerrors.NewAggregate(errors)
 	default:
-		return nil, fmt.Errorf("Unknown kubernetes object kind %v", value)
+		return nil, fmt.Errorf("unknown kubernetes object kind %v", value)
 	}
 }
 
@@ -786,7 +800,7 @@ func (r *CueReconciler) apply(ctx context.Context,
 	objects []*unstructured.Unstructured) (bool, *ssa.ChangeSet, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	if err := ssa.SetNativeKindsDefaults(objects); err != nil {
+	if err := normalize.UnstructuredList(objects); err != nil {
 		return false, nil, err
 	}
 
