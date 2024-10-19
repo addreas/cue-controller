@@ -3,8 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.11.1
-  creationTimestamp: null
+    controller-gen.kubebuilder.io/version: v0.16.3
   name: cueexports.cue.toolkit.fluxcd.io
 spec:
   group: cue.toolkit.fluxcd.io
@@ -13,7 +12,7 @@ spec:
     listKind: CueExportList
     plural: cueexports
     shortNames:
-    - ks
+    - ce
     singular: cueexport
   scope: Namespaced
   versions:
@@ -33,14 +32,19 @@ spec:
         description: CueExport is the Schema for the cue controller API.
         properties:
           apiVersion:
-            description: 'APIVersion defines the versioned schema of this representation
-              of an object. Servers should convert recognized schemas to the latest
-              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
-            description: 'Kind is a string value representing the REST resource this
-              object represents. Servers may infer this from the endpoint the client
-              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -48,13 +52,32 @@ spec:
             description: CueExportSpec defines the configuration to calculate the
               desired state from a Source using Kustomize.
             properties:
+              commonMetadata:
+                description: |-
+                  CommonMetadata specifies the common labels and annotations that are
+                  applied to all resources. Any existing label or annotation will be
+                  overridden if its key matches a common one.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations to be added to the object's metadata.
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: Labels to be added to the object's metadata.
+                    type: object
+                type: object
               dependsOn:
-                description: DependsOn may contain a meta.NamespacedObjectReference
-                  slice with references to CueExport resources that must be ready
-                  before this CueExport can be reconciled.
+                description: |-
+                  DependsOn may contain a meta.NamespacedObjectReference slice
+                  with references to CueExport resources that must be ready before this
+                  CueExport can be reconciled.
                 items:
-                  description: NamespacedObjectReference contains enough information
-                    to locate the referenced Kubernetes resource object in any namespace.
+                  description: |-
+                    NamespacedObjectReference contains enough information to locate the referenced Kubernetes resource object in any
+                    namespace.
                   properties:
                     name:
                       description: Name of the referent.
@@ -74,12 +97,14 @@ spec:
                 type: array
               force:
                 default: false
-                description: Force instructs the controller to recreate resources
+                description: |-
+                  Force instructs the controller to recreate resources
                   when patching fails due to an immutable field change.
                 type: boolean
               gates:
-                description: A list of CUE expressions that must be true for the CUE
-                  instance to be reconciled
+                description: |-
+                  A list of CUE expressions that must be true for the CUE instance to be
+                  reconciled
                 items:
                   description: GateExpr defines a CUE expression that must be true
                     for the CUE instance to be reconciled
@@ -98,9 +123,9 @@ spec:
               healthChecks:
                 description: A list of resources to be included in the health assessment.
                 items:
-                  description: NamespacedObjectKindReference contains enough information
-                    to locate the typed referenced Kubernetes resource object in any
-                    namespace.
+                  description: |-
+                    NamespacedObjectKindReference contains enough information to locate the typed referenced Kubernetes resource object
+                    in any namespace.
                   properties:
                     apiVersion:
                       description: API version of the referent, if not specified the
@@ -122,25 +147,31 @@ spec:
                   type: object
                 type: array
               interval:
-                description: The interval at which to reconcile the CueExport.
+                description: |-
+                  The interval at which to reconcile the CueExport.
+                  This interval is approximate and may be subject to jitter to ensure
+                  efficient use of resources.
                 pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
                 type: string
               kubeConfig:
-                description: The KubeConfig for reconciling the CueExport on a remote
-                  cluster. When used in combination with CueExportSpec.ServiceAccountName,
-                  forces the controller to act on behalf of that Service Account at
-                  the target cluster. If the --default-service-account flag is set,
-                  its value will be used as a controller level fallback for when CueExportSpec.ServiceAccountName
+                description: |-
+                  The KubeConfig for reconciling the CueExport on a remote cluster.
+                  When used in combination with CueExportSpec.ServiceAccountName,
+                  forces the controller to act on behalf of that Service Account at the
+                  target cluster.
+                  If the --default-service-account flag is set, its value will be used as
+                  a controller level fallback for when CueExportSpec.ServiceAccountName
                   is empty.
                 properties:
                   secretRef:
-                    description: SecretRef holds the name of a secret that contains
-                      a key with the kubeconfig file as the value. If no key is set,
-                      the key will default to 'value'. It is recommended that the
-                      kubeconfig is self-contained, and the secret is regularly updated
-                      if credentials such as a cloud-access-token expire. Cloud specific
-                      `cmd-path` auth helpers will not function without adding binaries
-                      and credentials to the Pod that is responsible for reconciling
+                    description: |-
+                      SecretRef holds the name of a secret that contains a key with
+                      the kubeconfig file as the value. If no key is set, the key will default
+                      to 'value'.
+                      It is recommended that the kubeconfig is self-contained, and the secret
+                      is regularly updated if credentials such as a cloud-access-token expire.
+                      Cloud specific `cmd-path` auth helpers will not function without adding
+                      binaries and credentials to the Pod that is responsible for reconciling
                       Kubernetes resources.
                     properties:
                       key:
@@ -157,8 +188,9 @@ spec:
                 - secretRef
                 type: object
               package:
-                description: The CUE package to use for the CUE instance. This is
-                  useful when applying a CUE schema to plain yaml files.
+                description: |-
+                  The CUE package to use for the CUE instance. This is useful when applying
+                  a CUE schema to plain yaml files.
                 type: string
               paths:
                 description: The paths at which the CUE instances will be built from.
@@ -169,7 +201,8 @@ spec:
                 description: Prune enables garbage collection.
                 type: boolean
               retryInterval:
-                description: The interval at which to retry a previously failed reconciliation.
+                description: |-
+                  The interval at which to retry a previously failed reconciliation.
                   When not specified, the controller uses the CueExportSpec.Interval
                   value to retry failures.
                 pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
@@ -178,7 +211,8 @@ spec:
                 description: The module root of the CUE instance.
                 type: string
               serviceAccountName:
-                description: The name of the Kubernetes service account to impersonate
+                description: |-
+                  The name of the Kubernetes service account to impersonate
                   when reconciling this CueExport.
                 type: string
               sourceRef:
@@ -206,9 +240,9 @@ spec:
                 - name
                 type: object
               suspend:
-                description: This flag tells the controller to suspend subsequent
-                  cue exports, it does not apply to already started executions. Defaults
-                  to false.
+                description: |-
+                  This flag tells the controller to suspend subsequent cue exports,
+                  it does not apply to already started executions. Defaults to false.
                 type: boolean
               tagVars:
                 description: TagVars that will be available to the CUE instance.
@@ -231,8 +265,9 @@ spec:
                               description: The key to select.
                               type: string
                             name:
-                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                TODO: Add other useful fields. apiVersion, kind, uid?'
+                              description: |-
+                                Name of the referent.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                               type: string
                             optional:
                               description: Specify whether the ConfigMap or its key
@@ -250,8 +285,9 @@ spec:
                                 be a valid secret key.
                               type: string
                             name:
-                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                TODO: Add other useful fields. apiVersion, kind, uid?'
+                              description: |-
+                                Name of the referent.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                               type: string
                             optional:
                               description: Specify whether the Secret or its key must
@@ -287,8 +323,9 @@ spec:
                               description: The key to select.
                               type: string
                             name:
-                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                TODO: Add other useful fields. apiVersion, kind, uid?'
+                              description: |-
+                                Name of the referent.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                               type: string
                             optional:
                               description: Specify whether the ConfigMap or its key
@@ -306,8 +343,9 @@ spec:
                                 be a valid secret key.
                               type: string
                             name:
-                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                                TODO: Add other useful fields. apiVersion, kind, uid?'
+                              description: |-
+                                Name of the referent.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                               type: string
                             optional:
                               description: Specify whether the Secret or its key must
@@ -323,14 +361,15 @@ spec:
                   type: object
                 type: array
               timeout:
-                description: Timeout for validation, apply and health checking operations.
+                description: |-
+                  Timeout for validation, apply and health checking operations.
                   Defaults to 'Interval' duration.
                 pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
                 type: string
               wait:
-                description: Wait instructs the controller to check the health of
-                  all the reconciled resources. When enabled, the HealthChecks are
-                  ignored. Defaults to false.
+                description: |-
+                  Wait instructs the controller to check the health of all the reconciled resources.
+                  When enabled, the HealthChecks are ignored. Defaults to false.
                 type: boolean
             required:
             - interval
@@ -344,43 +383,35 @@ spec:
             properties:
               conditions:
                 items:
-                  description: "Condition contains details for one aspect of the current
-                    state of this API Resource. --- This struct is intended for direct
-                    use as an array at the field path .status.conditions.  For example,
-                    \n type FooStatus struct{ // Represents the observations of a
-                    foo's current state. // Known .status.conditions.type are: \"Available\",
-                    \"Progressing\", and \"Degraded\" // +patchMergeKey=type // +patchStrategy=merge
-                    // +listType=map // +listMapKey=type Conditions []metav1.Condition
-                    `json:\"conditions,omitempty\" patchStrategy:\"merge\" patchMergeKey:\"type\"
-                    protobuf:\"bytes,1,rep,name=conditions\"` \n // other fields }"
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
                   properties:
                     lastTransitionTime:
-                      description: lastTransitionTime is the last time the condition
-                        transitioned from one status to another. This should be when
-                        the underlying condition changed.  If that is not known, then
-                        using the time when the API field changed is acceptable.
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
                       format: date-time
                       type: string
                     message:
-                      description: message is a human readable message indicating
-                        details about the transition. This may be an empty string.
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
                       maxLength: 32768
                       type: string
                     observedGeneration:
-                      description: observedGeneration represents the .metadata.generation
-                        that the condition was set based upon. For instance, if .metadata.generation
-                        is currently 12, but the .status.conditions[x].observedGeneration
-                        is 9, the condition is out of date with respect to the current
-                        state of the instance.
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
                       format: int64
                       minimum: 0
                       type: integer
                     reason:
-                      description: reason contains a programmatic identifier indicating
-                        the reason for the condition's last transition. Producers
-                        of specific condition types may define expected values and
-                        meanings for this field, and whether the values are considered
-                        a guaranteed API. The value should be a CamelCase string.
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
                         This field may not be empty.
                       maxLength: 1024
                       minLength: 1
@@ -395,10 +426,6 @@ spec:
                       type: string
                     type:
                       description: type of condition in CamelCase or in foo.example.com/CamelCase.
-                        --- Many .condition.type values are consistent across resources
-                        like Available, but because arbitrary conditions can be useful
-                        (see .node.status.conditions), the ability to deconflict is
-                        important. The regex it matches is (dns1123SubdomainFmt/)?(qualifiedNameFmt)
                       maxLength: 316
                       pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
                       type: string
@@ -421,8 +448,9 @@ spec:
                         to locate a resource within a cluster.
                       properties:
                         id:
-                          description: ID is the string representation of the Kubernetes
-                            resource object's metadata, in the format '<namespace>_<name>_<group>_<kind>'.
+                          description: |-
+                            ID is the string representation of the Kubernetes resource object's metadata,
+                            in the format '<namespace>_<name>_<group>_<kind>'.
                           type: string
                         v:
                           description: Version is the API version of the Kubernetes
@@ -437,17 +465,19 @@ spec:
                 - entries
                 type: object
               lastAppliedRevision:
-                description: The last successfully applied revision. Equals the Revision
-                  of the applied Artifact from the referenced Source.
+                description: |-
+                  The last successfully applied revision.
+                  Equals the Revision of the applied Artifact from the referenced Source.
                 type: string
               lastAttemptedRevision:
                 description: LastAttemptedRevision is the revision of the last reconciliation
                   attempt.
                 type: string
               lastHandledReconcileAt:
-                description: LastHandledReconcileAt holds the value of the most recent
-                  reconcile request value, so a change of the annotation value can
-                  be detected.
+                description: |-
+                  LastHandledReconcileAt holds the value of the most recent
+                  reconcile request value, so a change of the annotation value
+                  can be detected.
                 type: string
               observedGeneration:
                 description: ObservedGeneration is the last reconciled generation.
