@@ -44,7 +44,7 @@ OCIREPO_CRD ?= config/crd/bases/ocirepositories.yaml
 SOURCE_CRD_VER=$(BUILD_DIR)/.src-crd-$(SOURCE_VER)
 
 # API (doc) generation utilities
-CONTROLLER_GEN_VERSION ?= v0.16.3
+CONTROLLER_GEN_VERSION ?= v0.16.1
 GEN_API_REF_DOCS_VERSION ?= e327d0730470cbd61b06300f81c5fcf91c23c113
 
 all: manager
@@ -78,6 +78,7 @@ run: generate fmt vet manifests
 $(SOURCE_CRD_VER):
 	rm -f $(BUILD_DIR)/.src-crd*
 	$(MAKE) cleanup-crd-deps
+	if ! test -d "$(BUILD_DIR)"; then mkdir -p $(BUILD_DIR); fi
 	touch $(SOURCE_CRD_VER)
 
 $(GITREPO_CRD):
@@ -130,8 +131,8 @@ manifests: controller-gen
 
 # Run go mod tidy
 tidy:
-	cd api; rm -f go.sum; go mod tidy -compat=1.20
-	rm -f go.sum; go mod tidy -compat=1.21
+	cd api; rm -f go.sum; go mod tidy -compat=1.22
+	rm -f go.sum; go mod tidy -compat=1.22
 
 # Run go fmt against code
 fmt:

@@ -258,7 +258,6 @@ func (in *CueExport) SetConditions(conditions []metav1.Condition) {
 }
 
 // +genclient
-// +genclient:Namespaced
 // +kubebuilder:storageversion
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=ce

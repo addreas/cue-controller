@@ -116,7 +116,7 @@ Artifact containing the YAML manifests. It has two required fields:
 - `kind`: The Kind of the referred Source object. Supported Source types:
   + [GitRepository](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1/gitrepositories.md)
   + [OCIRepository](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1beta2/ocirepositories.md)
-  + [Bucket](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1beta2/buckets.md)
+  + [Bucket](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1/buckets.md)
 - `name`: The Name of the referred Source object.
 
 #### Cross-namespace references
@@ -401,6 +401,22 @@ should be applied to all the Kustomization's resources. It has two optional fiel
   on an object. Any existing annotation will be overridden if it matches with a key
   in this map.
 
+### Name Prefix and Suffix
+
+`.spec.namePrefix` and `.spec.nameSuffix` are optional fields used to specify a prefix and suffix
+to be added to the names of all the resources in the Kustomization.
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: app
+spec:
+  # ...omitted for brevity
+  namePrefix: "prefix-"
+  nameSuffix: "-suffix"
+```
+
 ### Patches
 
 `.spec.patches` is an optional list used to specify [Kustomize `patches`](https://kubectl.docs.kubernetes.io/references/kustomize/kustomization/patches/)
@@ -564,8 +580,7 @@ kind: Kustomization
 metadata:
   name: apps
 spec:
-  interval: 5m
-  path: "./apps/"
+  # ...omitted for brevity
   postBuild:
     substitute:
       cluster_env: "prod"
@@ -605,6 +620,11 @@ will print out `${var}`.
 All the undefined variables in the format `${var}` will be substituted with an
 empty string unless a default value is provided e.g. `${var:=default}`.
 
+**Note:** It is recommended to set the `--feature-gates=StrictPostBuildSubstitutions=true`
+controller flag, so that the post-build substitutions will fail if a
+variable without a default value is declared in files but is
+missing from the input vars.
+
 You can disable the variable substitution for certain resources by either
 labelling or annotating them with:
 
@@ -624,21 +644,23 @@ kind: Kustomization
 metadata:
   name: apps
 spec:
-  ...
+  # ...omitted for brevity
   postBuild:
     substitute:
       var_substitution_enabled: "true"
 ```
 
+**Note:** When using numbers or booleans as values for variables, they must be
+enclosed in double quotes vars to be treated as strings, for more information see
+[substitution of numbers and booleans](#post-build-substitution-of-numbers-and-booleans).
+
 You can replicate the controller post-build substitutions locally using
 [kustomize](https://github.com/kubernetes-sigs/kustomize)
-and Drone's [envsubst](https://github.com/drone/envsubst):
+and the Flux CLI:
 
 ```console
-$ go install github.com/drone/envsubst/cmd/envsubst
-
 $ export cluster_region=eu-central-1
-$ kustomize build ./apps/ | $GOPATH/bin/envsubst
+$ kustomize build ./apps/ | flux envsubst --strict
 ---
 apiVersion: v1
 kind: Namespace
@@ -717,12 +739,13 @@ Secret, encrypting the `metadata`, `kind` or `apiVersion` fields is not supporte
 An easy way to do this is by appending `--encrypted-regex '^(data|stringData)$'`
 to your `sops --encrypt` command.
 
-It has two required fields:
+It has two fields:
 
+- `.provider`: The secrets decryption provider to be used. This field is required and
+  the only supported value is `sops`.
 - `.secretRef.name`: The name of the secret that contains the keys to be used for
-   decryption.
-- `.provider`: The secrets decryption provider to be used. The only supported
-   value at the moment is `sops`.
+  decryption. This field can be omitted when using the
+  [global decryption](#controller-global-decryption) option.
 
 ```yaml
 ---
@@ -1390,32 +1413,6 @@ patches:
               azure.workload.identity/use: "true"
 ```
 
-##### AAD Pod Identity
-
-While making use of [AAD Pod Identity](https://github.com/Azure/aad-pod-identity),
-you can bind a Managed Identity to Flux's kustomize-controller. Once the
-`AzureIdentity` and `AzureIdentityBinding` for this are created, you can patch
-the controller's Deployment with the `aadpodidbinding` label set to the
-selector of the binding.
-
-```yaml
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kustomize-controller
-  namespace: flux-system
-spec:
-  template:
-    metadata:
-      labels:
-        aadpodidbinding: sops-akv-decryptor  # match the AzureIdentityBinding selector
-```
-
-In addition to this, the [default SOPS Azure Key Vault flow is
-followed](https://github.com/mozilla/sops#encrypting-using-azure-key-vault),
-allowing you to specify a variety of other environment variables.
-
 ##### Kubelet Identity
 
 If the kubelet managed identity has `Decrypt` permissions on Azure Key Vault,
@@ -1552,6 +1549,38 @@ secretGenerator:
     type: kubernetes.io/dockerconfigjson
     files:
       - .dockerconfigjson=ghcr.dockerconfigjson.encrypted
+```
+
+### Post build substitution of numbers and booleans
+
+When using [variable substitution](#post-build-variable-substitution) with values
+that are numbers or booleans, the reconciliation may fail if the substitution
+is for a field that must be of type string. To convert the number or boolean
+to a string, you can wrap the variable with a double quotes var:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app
+  annotations:
+    id: ${quote}${id}${quote}
+    enabled: ${quote}${enabled}${quote}
+```
+
+Then in the Flux Kustomization, define the variables as:
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: app
+spec:
+  postBuild:
+    substitute:
+      quote: '"' # double quote var
+      id: "123"
+      enabled: "true"
 ```
 
 ### Triggering a reconcile

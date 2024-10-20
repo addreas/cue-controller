@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	kuberecorder "k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,7 +47,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/ratelimiter"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
 	"github.com/fluxcd/cli-utils/pkg/object"
@@ -88,6 +89,7 @@ type CueReconciler struct {
 	artifactFetchRetries int
 	requeueDependency    time.Duration
 
+	APIReader               client.Reader
 	StatusPoller            *polling.StatusPoller
 	PollingOpts             polling.Options
 	ControllerName          string
@@ -99,13 +101,14 @@ type CueReconciler struct {
 	KubeConfigOpts          runtimeClient.KubeConfigOptions
 	ConcurrentSSA           int
 	DisallowedFieldManagers []string
+	StrictSubstitutions     bool
 }
 
 // CueReconcilerOptions contains options for the CueReconciler.
 type CueReconcilerOptions struct {
 	HTTPRetry                 int
 	DependencyRequeueInterval time.Duration
-	RateLimiter               ratelimiter.RateLimiter
+	RateLimiter               workqueue.TypedRateLimiter[reconcile.Request]
 }
 
 func (r *CueReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, opts CueReconcilerOptions) error {
@@ -129,7 +132,7 @@ func (r *CueReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, 
 
 	// Index the CueExports by the Bucket references they (may) point at.
 	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, bucketIndexKey,
-		r.indexBy(sourcev1b2.BucketKind)); err != nil {
+		r.indexBy(sourcev1.BucketKind)); err != nil {
 		return fmt.Errorf("failed setting index fields: %w", err)
 	}
 
@@ -152,7 +155,7 @@ func (r *CueReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, 
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
 		Watches(
-			&sourcev1b2.Bucket{},
+			&sourcev1.Bucket{},
 			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(bucketIndexKey)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
@@ -222,7 +225,7 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 	// Resolve the source reference and requeue the reconciliation if the source is not found.
 	artifactSource, err := r.getSource(ctx, obj)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
 
 		if apierrors.IsNotFound(err) {
 			msg := fmt.Sprintf("Source '%s' not found", obj.Spec.SourceRef.String())
@@ -231,20 +234,20 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 		}
 
 		if acl.IsAccessDenied(err) {
-			conditions.MarkFalse(obj, meta.ReadyCondition, apiacl.AccessDeniedReason, err.Error())
+			conditions.MarkFalse(obj, meta.ReadyCondition, apiacl.AccessDeniedReason, "%s", err)
 			log.Error(err, "Access denied to cross-namespace source")
 			r.event(obj, "unknown", eventv1.EventSeverityError, err.Error(), nil)
 			return ctrl.Result{RequeueAfter: obj.GetRetryInterval()}, nil
 		}
 
 		// Retry with backoff on transient errors.
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{}, err
 	}
 
 	// Requeue the reconciliation if the source artifact is not found.
 	if artifactSource.GetArtifact() == nil {
 		msg := fmt.Sprintf("Source artifact not found, retrying in %s", r.requeueDependency.String())
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, msg)
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", msg)
 		log.Info(msg)
 		return ctrl.Result{RequeueAfter: r.requeueDependency}, nil
 	}
@@ -252,7 +255,7 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 	// Check dependencies and requeue the reconciliation if the check fails.
 	if len(obj.Spec.DependsOn) > 0 {
 		if err := r.checkDependencies(ctx, obj, artifactSource); err != nil {
-			conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.DependencyNotReadyReason, err.Error())
+			conditions.MarkFalse(obj, meta.ReadyCondition, meta.DependencyNotReadyReason, "%s", err)
 			msg := fmt.Sprintf("Dependencies do not meet ready condition, retrying in %s", r.requeueDependency.String())
 			log.Info(msg)
 			r.event(obj, artifactSource.GetArtifact().Revision, eventv1.EventSeverityInfo, msg, nil)
@@ -267,7 +270,7 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 	// Requeue at the specified retry interval if the artifact tarball is not found.
 	if errors.Is(reconcileErr, fetch.ErrFileNotFound) {
 		msg := fmt.Sprintf("Source is not ready, artifact not found, retrying in %s", r.requeueDependency.String())
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, msg)
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", msg)
 		log.Info(msg)
 		return ctrl.Result{RequeueAfter: r.requeueDependency}, nil
 	}
@@ -293,12 +296,13 @@ func (r *CueReconciler) reconcile(
 	obj *cuev1.CueExport,
 	src sourcev1.Source,
 	patcher *patch.SerialPatcher) error {
+	log := ctrl.LoggerFrom(ctx)
 
 	// Update status with the reconciliation progress.
 	revision := src.GetArtifact().Revision
 	progressingMsg := fmt.Sprintf("Fetching manifests for revision %s with a timeout of %s", revision, obj.GetTimeout().String())
-	conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "Reconciliation in progress")
-	conditions.MarkReconciling(obj, meta.ProgressingReason, progressingMsg)
+	conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "%s", "Reconciliation in progress")
+	conditions.MarkReconciling(obj, meta.ProgressingReason, "%s", progressingMsg)
 	if err := r.patch(ctx, obj, patcher); err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
 	}
@@ -313,11 +317,15 @@ func (r *CueReconciler) reconcile(
 	tmpDir, err := MkdirTempAbs("", "cue-export-")
 	if err != nil {
 		err = fmt.Errorf("tmp dir error: %w", err)
-		conditions.MarkFalse(obj, meta.ReadyCondition, sourcev1.DirCreationFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, sourcev1.DirCreationFailedReason, "%s", err)
 		return err
 	}
 
-	defer os.RemoveAll(tmpDir)
+	defer func(path string) {
+		if err := os.RemoveAll(path); err != nil {
+			log.Error(err, "failed to remove tmp dir", "path", path)
+		}
+	}(tmpDir)
 
 	// Download artifact and extract files to the tmp dir.
 	if err = fetch.NewArchiveFetcherWithLogger(
@@ -327,7 +335,7 @@ func (r *CueReconciler) reconcile(
 		os.Getenv("SOURCE_CONTROLLER_LOCALHOST"),
 		ctrl.LoggerFrom(ctx),
 	).Fetch(src.GetArtifact().URL, src.GetArtifact().Digest, tmpDir); err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
 		return err
 	}
 
@@ -346,13 +354,13 @@ func (r *CueReconciler) reconcile(
 	for _, p := range obj.Spec.Paths {
 		pp, err := securejoin.SecureJoin(tmpDir, p)
 		if err != nil {
-			conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
+			conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
 			return err
 		}
 
 		if _, err := os.Stat(pp); err != nil {
 			err = fmt.Errorf("path %s not found: %w", p, err)
-			conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
+			conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
 			return err
 		}
 	}
@@ -360,7 +368,7 @@ func (r *CueReconciler) reconcile(
 	// Report progress and set last attempted revision in status.
 	obj.Status.LastAttemptedRevision = revision
 	progressingMsg = fmt.Sprintf("Building manifests for revision %s with a timeout of %s", revision, obj.GetTimeout().String())
-	conditions.MarkReconciling(obj, meta.ProgressingReason, progressingMsg)
+	conditions.MarkReconciling(obj, meta.ProgressingReason, "%s", progressingMsg)
 	if err := r.patch(ctx, obj, patcher); err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
 	}
@@ -380,25 +388,25 @@ func (r *CueReconciler) reconcile(
 	// Create the Kubernetes client that runs under impersonation.
 	kubeClient, statusPoller, err := impersonation.GetClient(ctx)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ReconciliationFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ReconciliationFailedReason, "%s", err)
 		return fmt.Errorf("failed to build kube client: %w", err)
 	}
 
 	values, err := r.values(ctx, moduleRootPath, obj)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.BuildFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
 		return err
 	}
 
 	objects, err := r.build(ctx, values, obj)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.BuildFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
 		return err
 	}
 
 	err = r.checkGates(ctx, values, obj)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.GateFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
 		return err
 	}
 
@@ -412,7 +420,7 @@ func (r *CueReconciler) reconcile(
 
 	// Update status with the reconciliation progress.
 	progressingMsg = fmt.Sprintf("Detecting drift for revision %s with a timeout of %s", revision, obj.GetTimeout().String())
-	conditions.MarkReconciling(obj, meta.ProgressingReason, progressingMsg)
+	conditions.MarkReconciling(obj, meta.ProgressingReason, "%s", progressingMsg)
 	if err := r.patch(ctx, obj, patcher); err != nil {
 		return fmt.Errorf("failed to update status: %w", err)
 	}
@@ -420,7 +428,7 @@ func (r *CueReconciler) reconcile(
 	// Validate and apply resources in stages.
 	drifted, changeSet, err := r.apply(ctx, resourceManager, obj, revision, objects)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ReconciliationFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ReconciliationFailedReason, "%s", err)
 		return err
 	}
 
@@ -428,7 +436,7 @@ func (r *CueReconciler) reconcile(
 	newInventory := inventory.New()
 	err = inventory.AddChangeSet(newInventory, changeSet)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ReconciliationFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ReconciliationFailedReason, "%s", err)
 		return err
 	}
 
@@ -438,13 +446,13 @@ func (r *CueReconciler) reconcile(
 	// Detect stale resources which are subject to garbage collection.
 	staleObjects, err := inventory.Diff(oldInventory, newInventory)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ReconciliationFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ReconciliationFailedReason, "%s", err)
 		return err
 	}
 
 	// Run garbage collection for stale resources that do not have pruning disabled.
 	if _, err := r.prune(ctx, resourceManager, obj, revision, staleObjects); err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.PruneFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.PruneFailedReason, "%s", err)
 		return err
 	}
 
@@ -458,7 +466,7 @@ func (r *CueReconciler) reconcile(
 		isNewRevision,
 		drifted,
 		changeSet.ToObjMetadataSet()); err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.HealthCheckFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.HealthCheckFailedReason, "%s", err)
 		return err
 	}
 
@@ -468,7 +476,7 @@ func (r *CueReconciler) reconcile(
 	// Mark the object as ready.
 	conditions.MarkTrue(obj,
 		meta.ReadyCondition,
-		cuev1.ReconciliationSucceededReason,
+		meta.ReconciliationSucceededReason,
 		fmt.Sprintf("Applied revision: %s", revision))
 
 	return nil
@@ -484,7 +492,7 @@ func (r *CueReconciler) checkDependencies(ctx context.Context, obj *cuev1.CueExp
 			Name:      d.Name,
 		}
 		var k cuev1.CueExport
-		err := r.Get(ctx, dName, &k)
+		err := r.APIReader.Get(ctx, dName, &k)
 		if err != nil {
 			return fmt.Errorf("dependency '%s' not found: %w", dName, err)
 		}
@@ -555,8 +563,8 @@ func (r *CueReconciler) getSource(ctx context.Context, obj *cuev1.CueExport) (so
 			return src, fmt.Errorf("unable to get source '%s': %w", namespacedName, err)
 		}
 		src = &repository
-	case sourcev1b2.BucketKind:
-		var bucket sourcev1b2.Bucket
+	case sourcev1.BucketKind:
+		var bucket sourcev1.Bucket
 		err := r.Client.Get(ctx, namespacedName, &bucket)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
@@ -804,8 +812,8 @@ func (r *CueReconciler) apply(ctx context.Context,
 		return false, nil, err
 	}
 
-	if meta := obj.Spec.CommonMetadata; meta != nil {
-		ssautil.SetCommonMetadata(objects, meta.Labels, meta.Annotations)
+	if cmeta := obj.Spec.CommonMetadata; cmeta != nil {
+		ssautil.SetCommonMetadata(objects, cmeta.Labels, cmeta.Annotations)
 	}
 
 	applyOpts := ssa.DefaultApplyOptions()
@@ -984,7 +992,7 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 	drifted bool,
 	objects object.ObjMetadataSet) error {
 	if len(obj.Spec.HealthChecks) == 0 && !obj.Spec.Wait {
-		conditions.Delete(obj, cuev1.HealthyCondition)
+		conditions.Delete(obj, meta.HealthyCondition)
 		return nil
 	}
 
@@ -998,7 +1006,7 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 	}
 
 	if len(objects) == 0 {
-		conditions.Delete(obj, cuev1.HealthyCondition)
+		conditions.Delete(obj, meta.HealthyCondition)
 		return nil
 	}
 
@@ -1014,12 +1022,12 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 	}
 
 	// Find the previous health check result.
-	wasHealthy := apimeta.IsStatusConditionTrue(obj.Status.Conditions, cuev1.HealthyCondition)
+	wasHealthy := apimeta.IsStatusConditionTrue(obj.Status.Conditions, meta.HealthyCondition)
 
 	// Update status with the reconciliation progress.
 	message := fmt.Sprintf("Running health checks for revision %s with a timeout of %s", revision, obj.GetTimeout().String())
-	conditions.MarkReconciling(obj, meta.ProgressingReason, message)
-	conditions.MarkUnknown(obj, cuev1.HealthyCondition, meta.ProgressingReason, message)
+	conditions.MarkReconciling(obj, meta.ProgressingReason, "%s", message)
+	conditions.MarkUnknown(obj, meta.HealthyCondition, meta.ProgressingReason, "%s", message)
 	if err := r.patch(ctx, obj, patcher); err != nil {
 		return fmt.Errorf("unable to update the healthy status to progressing: %w", err)
 	}
@@ -1030,8 +1038,8 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 		Timeout:  obj.GetTimeout(),
 		FailFast: r.FailFast,
 	}); err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.HealthCheckFailedReason, err.Error())
-		conditions.MarkFalse(obj, cuev1.HealthyCondition, cuev1.HealthCheckFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.HealthCheckFailedReason, "%s", err)
+		conditions.MarkFalse(obj, meta.HealthyCondition, meta.HealthCheckFailedReason, "%s", err)
 		return fmt.Errorf("health check failed after %s: %w", time.Since(checkStart).String(), err)
 	}
 
@@ -1041,7 +1049,7 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 		r.event(obj, revision, eventv1.EventSeverityInfo, msg, nil)
 	}
 
-	conditions.MarkTrue(obj, cuev1.HealthyCondition, meta.SucceededReason, msg)
+	conditions.MarkTrue(obj, meta.HealthyCondition, meta.SucceededReason, "%s", msg)
 	if err := r.patch(ctx, obj, patcher); err != nil {
 		return fmt.Errorf("unable to update the healthy status to progressing: %w", err)
 	}
@@ -1158,7 +1166,6 @@ func (r *CueReconciler) event(obj *cuev1.CueExport,
 	}
 
 	reason := severity
-	conditions.GetReason(obj, meta.ReadyCondition)
 	if r := conditions.GetReason(obj, meta.ReadyCondition); r != "" {
 		reason = r
 	}
@@ -1206,7 +1213,7 @@ func (r *CueReconciler) patch(ctx context.Context,
 	// Configure the runtime patcher.
 	patchOpts := []patch.Option{}
 	ownedConditions := []string{
-		cuev1.HealthyCondition,
+		meta.HealthyCondition,
 		meta.ReadyCondition,
 		meta.ReconcilingCondition,
 		meta.StalledCondition,
