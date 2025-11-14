@@ -17,11 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -30,43 +30,45 @@ import (
 	"cuelang.org/go/cue/load"
 	"cuelang.org/go/cue/parser"
 	securejoin "github.com/cyphar/filepath-securejoin"
-	ssautil "github.com/fluxcd/pkg/ssa/utils"
+	celtypes "github.com/google/cel-go/common/types"
+	"github.com/opencontainers/go-digest"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	kuberecorder "k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/fluxcd/cli-utils/pkg/kstatus/polling"
+	"github.com/fluxcd/cli-utils/pkg/kstatus/polling/engine"
 	"github.com/fluxcd/cli-utils/pkg/object"
 	apiacl "github.com/fluxcd/pkg/apis/acl"
 	eventv1 "github.com/fluxcd/pkg/apis/event/v1beta1"
 	"github.com/fluxcd/pkg/apis/meta"
+	"github.com/fluxcd/pkg/auth"
+	authutils "github.com/fluxcd/pkg/auth/utils"
+	"github.com/fluxcd/pkg/cache"
 	"github.com/fluxcd/pkg/http/fetch"
 	"github.com/fluxcd/pkg/runtime/acl"
+	"github.com/fluxcd/pkg/runtime/cel"
 	runtimeClient "github.com/fluxcd/pkg/runtime/client"
 	"github.com/fluxcd/pkg/runtime/conditions"
 	runtimeCtrl "github.com/fluxcd/pkg/runtime/controller"
 	"github.com/fluxcd/pkg/runtime/jitter"
 	"github.com/fluxcd/pkg/runtime/patch"
-	"github.com/fluxcd/pkg/runtime/predicates"
+	"github.com/fluxcd/pkg/runtime/statusreaders"
 	"github.com/fluxcd/pkg/ssa"
 	"github.com/fluxcd/pkg/ssa/normalize"
+	ssautil "github.com/fluxcd/pkg/ssa/utils"
 	"github.com/fluxcd/pkg/tar"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
-	sourcev1b2 "github.com/fluxcd/source-controller/api/v1beta2"
 
 	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
 	"github.com/addreas/cue-controller/internal/inventory"
@@ -78,6 +80,7 @@ import (
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=buckets;ocirepositories;gitrepositories,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=buckets/status;ocirepositories/status;gitrepositories/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets;serviceaccounts,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts/token,verbs=create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // CueReconciler reconciles a CueExport object
@@ -86,83 +89,39 @@ type CueReconciler struct {
 	kuberecorder.EventRecorder
 	runtimeCtrl.Metrics
 
-	artifactFetchRetries int
-	requeueDependency    time.Duration
+	// Kubernetes options
 
-	APIReader               client.Reader
-	StatusPoller            *polling.StatusPoller
-	PollingOpts             polling.Options
-	ControllerName          string
-	statusManager           string
+	APIReader      client.Reader
+	ClusterReader  engine.ClusterReaderFactory
+	ConcurrentSSA  int
+	ControllerName string
+	KubeConfigOpts runtimeClient.KubeConfigOptions
+	Mapper         apimeta.RESTMapper
+	StatusManager  string
+
+	// Multi-tenancy and security options
+
+	DefaultServiceAccount   string
+	DisallowedFieldManagers []string
 	NoCrossNamespaceRefs    bool
 	NoRemoteBases           bool
-	FailFast                bool
-	DefaultServiceAccount   string
-	KubeConfigOpts          runtimeClient.KubeConfigOptions
-	ConcurrentSSA           int
-	DisallowedFieldManagers []string
-	StrictSubstitutions     bool
-}
+	SOPSAgeSecret           string
+	TokenCache              *cache.TokenCache
 
-// CueReconcilerOptions contains options for the CueReconciler.
-type CueReconcilerOptions struct {
-	HTTPRetry                 int
+	HTTPRetry int
+	// Retry and requeue options
+
+	ArtifactFetchRetries      int
 	DependencyRequeueInterval time.Duration
-	RateLimiter               workqueue.TypedRateLimiter[reconcile.Request]
-}
 
-func (r *CueReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, opts CueReconcilerOptions) error {
-	const (
-		ociRepositoryIndexKey string = ".metadata.ociRepository"
-		gitRepositoryIndexKey string = ".metadata.gitRepository"
-		bucketIndexKey        string = ".metadata.bucket"
-	)
+	// Feature gates
 
-	// Index the CueExports by the OCIRepository references they (may) point at.
-	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, ociRepositoryIndexKey,
-		r.indexBy(sourcev1b2.OCIRepositoryKind)); err != nil {
-		return fmt.Errorf("failed setting index fields: %w", err)
-	}
-
-	// Index the CueExports by the GitRepository references they (may) point at.
-	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, gitRepositoryIndexKey,
-		r.indexBy(sourcev1.GitRepositoryKind)); err != nil {
-		return fmt.Errorf("failed setting index fields: %w", err)
-	}
-
-	// Index the CueExports by the Bucket references they (may) point at.
-	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, bucketIndexKey,
-		r.indexBy(sourcev1.BucketKind)); err != nil {
-		return fmt.Errorf("failed setting index fields: %w", err)
-	}
-
-	r.requeueDependency = opts.DependencyRequeueInterval
-	r.statusManager = fmt.Sprintf("gotk-%s", r.ControllerName)
-	r.artifactFetchRetries = opts.HTTPRetry
-
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&cuev1.CueExport{}, builder.WithPredicates(
-			predicate.Or(predicate.GenerationChangedPredicate{}, predicates.ReconcileRequestedPredicate{}),
-		)).
-		Watches(
-			&sourcev1b2.OCIRepository{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(ociRepositoryIndexKey)),
-			builder.WithPredicates(SourceRevisionChangePredicate{}),
-		).
-		Watches(
-			&sourcev1.GitRepository{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(gitRepositoryIndexKey)),
-			builder.WithPredicates(SourceRevisionChangePredicate{}),
-		).
-		Watches(
-			&sourcev1.Bucket{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(bucketIndexKey)),
-			builder.WithPredicates(SourceRevisionChangePredicate{}),
-		).
-		WithOptions(controller.Options{
-			RateLimiter: opts.RateLimiter,
-		}).
-		Complete(r)
+	AdditiveCELDependencyCheck     bool
+	AllowExternalArtifact          bool
+	CancelHealthCheckOnNewRevision bool
+	FailFast                       bool
+	GroupChangeLog                 bool
+	StrictSubstitutions            bool
 }
 
 func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
@@ -185,9 +144,12 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 		}
 
 		// Record Prometheus metrics.
-		r.Metrics.RecordReadiness(ctx, obj)
 		r.Metrics.RecordDuration(ctx, obj, reconcileStart)
-		r.Metrics.RecordSuspend(ctx, obj, obj.Spec.Suspend)
+
+		// Do not proceed if the Kustomization is suspended
+		if obj.Spec.Suspend {
+			return
+		}
 
 		// Log and emit success event.
 		if conditions.IsReady(obj) {
@@ -195,7 +157,7 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 				time.Since(reconcileStart).String(),
 				obj.Spec.Interval.Duration.String())
 			log.Info(msg, "revision", obj.Status.LastAttemptedRevision)
-			r.event(obj, obj.Status.LastAppliedRevision, eventv1.EventSeverityInfo, msg,
+			r.event(obj, obj.Status.LastAppliedRevision, obj.Status.LastAppliedOriginRevision, eventv1.EventSeverityInfo, msg,
 				map[string]string{
 					cuev1.GroupVersion.Group + "/" + eventv1.MetaCommitStatusKey: eventv1.MetaCommitStatusUpdateValue,
 				})
@@ -222,6 +184,17 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 		return ctrl.Result{}, nil
 	}
 
+	// Configure custom health checks.
+	statusReaders, err := cel.PollerWithCustomHealthChecks(ctx, obj.Spec.HealthCheckExprs)
+	if err != nil {
+		errMsg := fmt.Sprintf("%s: %v", TerminalErrorMessage, err)
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.InvalidCELExpressionReason, "%s", errMsg)
+		conditions.MarkStalled(obj, meta.InvalidCELExpressionReason, "%s", errMsg)
+		obj.Status.ObservedGeneration = obj.Generation
+		r.event(obj, "", "", eventv1.EventSeverityError, errMsg, nil)
+		return ctrl.Result{}, reconcile.TerminalError(err)
+	}
+
 	// Resolve the source reference and requeue the reconciliation if the source is not found.
 	artifactSource, err := r.getSource(ctx, obj)
 	if err != nil {
@@ -235,9 +208,9 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 
 		if acl.IsAccessDenied(err) {
 			conditions.MarkFalse(obj, meta.ReadyCondition, apiacl.AccessDeniedReason, "%s", err)
-			log.Error(err, "Access denied to cross-namespace source")
-			r.event(obj, "unknown", eventv1.EventSeverityError, err.Error(), nil)
-			return ctrl.Result{RequeueAfter: obj.GetRetryInterval()}, nil
+			conditions.MarkStalled(obj, apiacl.AccessDeniedReason, "%s", err)
+			r.event(obj, "", "", eventv1.EventSeverityError, err.Error(), nil)
+			return ctrl.Result{}, reconcile.TerminalError(err)
 		}
 
 		// Retry with backoff on transient errors.
@@ -246,33 +219,46 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 
 	// Requeue the reconciliation if the source artifact is not found.
 	if artifactSource.GetArtifact() == nil {
-		msg := fmt.Sprintf("Source artifact not found, retrying in %s", r.requeueDependency.String())
+		msg := fmt.Sprintf("Source artifact not found, retrying in %s", r.DependencyRequeueInterval.String())
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", msg)
 		log.Info(msg)
-		return ctrl.Result{RequeueAfter: r.requeueDependency}, nil
+		return ctrl.Result{RequeueAfter: r.DependencyRequeueInterval}, nil
 	}
+	revision := artifactSource.GetArtifact().Revision
+	originRevision := getOriginRevision(artifactSource)
 
 	// Check dependencies and requeue the reconciliation if the check fails.
 	if len(obj.Spec.DependsOn) > 0 {
 		if err := r.checkDependencies(ctx, obj, artifactSource); err != nil {
+			// Check if this is a terminal error that should not trigger retries
+			if errors.Is(err, reconcile.TerminalError(nil)) {
+				errMsg := fmt.Sprintf("%s: %v", TerminalErrorMessage, err)
+				conditions.MarkFalse(obj, meta.ReadyCondition, meta.InvalidCELExpressionReason, "%s", errMsg)
+				conditions.MarkStalled(obj, meta.InvalidCELExpressionReason, "%s", errMsg)
+				obj.Status.ObservedGeneration = obj.Generation
+				r.event(obj, revision, originRevision, eventv1.EventSeverityError, errMsg, nil)
+				return ctrl.Result{}, err
+			}
+
+			// Retry on transient errors.
 			conditions.MarkFalse(obj, meta.ReadyCondition, meta.DependencyNotReadyReason, "%s", err)
-			msg := fmt.Sprintf("Dependencies do not meet ready condition, retrying in %s", r.requeueDependency.String())
+			msg := fmt.Sprintf("Dependencies do not meet ready condition, retrying in %s", r.DependencyRequeueInterval.String())
 			log.Info(msg)
-			r.event(obj, artifactSource.GetArtifact().Revision, eventv1.EventSeverityInfo, msg, nil)
-			return ctrl.Result{RequeueAfter: r.requeueDependency}, nil
+			r.event(obj, revision, originRevision, eventv1.EventSeverityInfo, msg, nil)
+			return ctrl.Result{RequeueAfter: r.DependencyRequeueInterval}, nil
 		}
 		log.Info("All dependencies are ready, proceeding with reconciliation")
 	}
 
 	// Reconcile the latest revision.
-	reconcileErr := r.reconcile(ctx, obj, artifactSource, patcher)
+	reconcileErr := r.reconcile(ctx, obj, artifactSource, patcher, statusReaders)
 
 	// Requeue at the specified retry interval if the artifact tarball is not found.
 	if errors.Is(reconcileErr, fetch.ErrFileNotFound) {
-		msg := fmt.Sprintf("Source is not ready, artifact not found, retrying in %s", r.requeueDependency.String())
+		msg := fmt.Sprintf("Source is not ready, artifact not found, retrying in %s", r.DependencyRequeueInterval.String())
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", msg)
 		log.Info(msg)
-		return ctrl.Result{RequeueAfter: r.requeueDependency}, nil
+		return ctrl.Result{RequeueAfter: r.DependencyRequeueInterval}, nil
 	}
 
 	// Broadcast the reconciliation failure and requeue at the specified retry interval.
@@ -281,8 +267,8 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 			time.Since(reconcileStart).String(),
 			obj.GetRetryInterval().String()),
 			"revision",
-			artifactSource.GetArtifact().Revision)
-		r.event(obj, artifactSource.GetArtifact().Revision, eventv1.EventSeverityError,
+			revision)
+		r.event(obj, revision, originRevision, eventv1.EventSeverityError,
 			reconcileErr.Error(), nil)
 		return ctrl.Result{RequeueAfter: obj.GetRetryInterval()}, nil
 	}
@@ -295,11 +281,14 @@ func (r *CueReconciler) reconcile(
 	ctx context.Context,
 	obj *cuev1.CueExport,
 	src sourcev1.Source,
-	patcher *patch.SerialPatcher) error {
+	patcher *patch.SerialPatcher,
+	statusReaders []func(apimeta.RESTMapper) engine.StatusReader) error {
+	reconcileStart := time.Now()
 	log := ctrl.LoggerFrom(ctx)
 
 	// Update status with the reconciliation progress.
 	revision := src.GetArtifact().Revision
+	originRevision := getOriginRevision(src)
 	progressingMsg := fmt.Sprintf("Fetching manifests for revision %s with a timeout of %s", revision, obj.GetTimeout().String())
 	conditions.MarkUnknown(obj, meta.ReadyCondition, meta.ProgressingReason, "%s", "Reconciliation in progress")
 	conditions.MarkReconciling(obj, meta.ProgressingReason, "%s", progressingMsg)
@@ -327,27 +316,34 @@ func (r *CueReconciler) reconcile(
 		}
 	}(tmpDir)
 
+	// Set the artifact URL hostname override for localhost access.
+	sourceLocalhost := os.Getenv("SOURCE_CONTROLLER_LOCALHOST")
+	if strings.Contains(src.GetArtifact().URL, "//source-watcher") {
+		sourceLocalhost = os.Getenv("SOURCE_WATCHER_LOCALHOST")
+	}
+
 	// Download artifact and extract files to the tmp dir.
-	if err = fetch.NewArchiveFetcherWithLogger(
-		r.artifactFetchRetries,
-		tar.UnlimitedUntarSize,
-		tar.UnlimitedUntarSize,
-		os.Getenv("SOURCE_CONTROLLER_LOCALHOST"),
-		ctrl.LoggerFrom(ctx),
-	).Fetch(src.GetArtifact().URL, src.GetArtifact().Digest, tmpDir); err != nil {
+	fetcher := fetch.New(
+		fetch.WithLogger(ctrl.LoggerFrom(ctx)),
+		fetch.WithRetries(r.ArtifactFetchRetries),
+		fetch.WithMaxDownloadSize(tar.UnlimitedUntarSize),
+		fetch.WithUntar(tar.WithMaxUntarSize(tar.UnlimitedUntarSize)),
+		fetch.WithHostnameOverwrite(sourceLocalhost),
+	)
+	if err = fetcher.Fetch(src.GetArtifact().URL, src.GetArtifact().Digest, tmpDir); err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
 		return err
 	}
 
 	moduleRootPath, err := securejoin.SecureJoin(tmpDir, obj.Spec.Root)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, "%s", err.Error())
 		return err
 	}
 
 	if _, err := os.Stat(moduleRootPath); err != nil {
 		err = fmt.Errorf("root path not found: %w", err)
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, "%s", err.Error())
 	}
 
 	// check build path exists
@@ -374,19 +370,33 @@ func (r *CueReconciler) reconcile(
 	}
 
 	// Configure the Kubernetes client for impersonation.
-	impersonation := runtimeClient.NewImpersonator(
-		r.Client,
-		r.StatusPoller,
-		r.PollingOpts,
-		obj.Spec.KubeConfig,
-		r.KubeConfigOpts,
-		r.DefaultServiceAccount,
-		obj.Spec.ServiceAccountName,
-		obj.GetNamespace(),
-	)
+	var impersonatorOpts []runtimeClient.ImpersonatorOption
+	var mustImpersonate bool
+	if r.DefaultServiceAccount != "" || obj.Spec.ServiceAccountName != "" {
+		mustImpersonate = true
+		impersonatorOpts = append(impersonatorOpts,
+			runtimeClient.WithServiceAccount(r.DefaultServiceAccount, obj.Spec.ServiceAccountName, obj.GetNamespace()))
+	}
+	if obj.Spec.KubeConfig != nil {
+		mustImpersonate = true
+		provider := r.getProviderRESTConfigFetcher(obj)
+		impersonatorOpts = append(impersonatorOpts,
+			runtimeClient.WithKubeConfig(obj.Spec.KubeConfig, r.KubeConfigOpts, obj.GetNamespace(), provider))
+	}
+	if r.ClusterReader != nil || len(statusReaders) > 0 {
+		impersonatorOpts = append(impersonatorOpts,
+			runtimeClient.WithPolling(r.ClusterReader, statusReaders...))
+	}
+	impersonation := runtimeClient.NewImpersonator(r.Client, impersonatorOpts...)
 
 	// Create the Kubernetes client that runs under impersonation.
-	kubeClient, statusPoller, err := impersonation.GetClient(ctx)
+	var kubeClient client.Client
+	var statusPoller *polling.StatusPoller
+	if mustImpersonate {
+		kubeClient, statusPoller, err = impersonation.GetClient(ctx)
+	} else {
+		kubeClient, statusPoller = r.getClientAndPoller(statusReaders)
+	}
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ReconciliationFailedReason, "%s", err)
 		return fmt.Errorf("failed to build kube client: %w", err)
@@ -398,7 +408,7 @@ func (r *CueReconciler) reconcile(
 		return err
 	}
 
-	objects, err := r.build(ctx, values, obj)
+	resources, err := r.build(ctx, values, obj)
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
 		return err
@@ -408,6 +418,20 @@ func (r *CueReconciler) reconcile(
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
 		return err
+	}
+
+	// Convert the build result into Kubernetes unstructured objects.
+	objects, err := ssautil.ReadObjects(bytes.NewReader(resources))
+	if err != nil {
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
+		return err
+	}
+
+	// Calculate the digest of the built resources for history tracking.
+	checksum := digest.FromBytes(resources).String()
+	historyMeta := map[string]string{"revision": revision}
+	if originRevision != "" {
+		historyMeta["originRevision"] = originRevision
 	}
 
 	// Create the server-side apply manager.
@@ -426,16 +450,29 @@ func (r *CueReconciler) reconcile(
 	}
 
 	// Validate and apply resources in stages.
-	drifted, changeSet, err := r.apply(ctx, resourceManager, obj, revision, objects)
+	drifted, changeSetWithSkipped, err := r.apply(ctx, resourceManager, obj, revision, originRevision, objects)
 	if err != nil {
+		obj.Status.History.Upsert(checksum, time.Now(), time.Since(reconcileStart), meta.ReconciliationFailedReason, historyMeta)
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ReconciliationFailedReason, "%s", err)
 		return err
+	}
+
+	// Filter out skipped entries from the change set.
+	changeSet := ssa.NewChangeSet()
+	skippedSet := make(map[object.ObjMetadata]struct{})
+	for _, entry := range changeSetWithSkipped.Entries {
+		if entry.Action == ssa.SkippedAction {
+			skippedSet[entry.ObjMetadata] = struct{}{}
+		} else {
+			changeSet.Add(entry)
+		}
 	}
 
 	// Create an inventory from the reconciled resources.
 	newInventory := inventory.New()
 	err = inventory.AddChangeSet(newInventory, changeSet)
 	if err != nil {
+		obj.Status.History.Upsert(checksum, time.Now(), time.Since(reconcileStart), meta.ReconciliationFailedReason, historyMeta)
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ReconciliationFailedReason, "%s", err)
 		return err
 	}
@@ -444,14 +481,16 @@ func (r *CueReconciler) reconcile(
 	obj.Status.Inventory = newInventory
 
 	// Detect stale resources which are subject to garbage collection.
-	staleObjects, err := inventory.Diff(oldInventory, newInventory)
+	staleObjects, err := inventory.Diff(oldInventory, newInventory, skippedSet)
 	if err != nil {
+		obj.Status.History.Upsert(checksum, time.Now(), time.Since(reconcileStart), meta.ReconciliationFailedReason, historyMeta)
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ReconciliationFailedReason, "%s", err)
 		return err
 	}
 
 	// Run garbage collection for stale resources that do not have pruning disabled.
-	if _, err := r.prune(ctx, resourceManager, obj, revision, staleObjects); err != nil {
+	if _, err := r.prune(ctx, resourceManager, obj, revision, originRevision, staleObjects); err != nil {
+		obj.Status.History.Upsert(checksum, time.Now(), time.Since(reconcileStart), meta.PruneFailedReason, historyMeta)
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.PruneFailedReason, "%s", err)
 		return err
 	}
@@ -463,69 +502,151 @@ func (r *CueReconciler) reconcile(
 		patcher,
 		obj,
 		revision,
+		originRevision,
 		isNewRevision,
 		drifted,
 		changeSet.ToObjMetadataSet()); err != nil {
+		obj.Status.History.Upsert(checksum, time.Now(), time.Since(reconcileStart), meta.HealthCheckFailedReason, historyMeta)
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.HealthCheckFailedReason, "%s", err)
 		return err
 	}
 
-	// Set last applied revision.
+	// Set last applied revisions.
 	obj.Status.LastAppliedRevision = revision
+	obj.Status.LastAppliedOriginRevision = originRevision
 
 	// Mark the object as ready.
 	conditions.MarkTrue(obj,
 		meta.ReadyCondition,
 		meta.ReconciliationSucceededReason,
-		fmt.Sprintf("Applied revision: %s", revision))
+		"Applied revision: %s", revision)
+	obj.Status.History.Upsert(checksum,
+		time.Now(),
+		time.Since(reconcileStart),
+		meta.ReconciliationSucceededReason,
+		historyMeta)
 
 	return nil
 }
 
-func (r *CueReconciler) checkDependencies(ctx context.Context, obj *cuev1.CueExport, source sourcev1.Source) error {
-	for _, d := range obj.Spec.DependsOn {
-		if d.Namespace == "" {
-			d.Namespace = obj.GetNamespace()
+// checkDependencies checks if the dependencies of the current Kustomization are ready.
+// To be considered ready, a dependencies must meet the following criteria:
+// - The dependency exists in the API server.
+// - The CEL expression (if provided) must evaluate to true.
+// - The dependency observed generation must match the current generation.
+// - The dependency Ready condition must be true.
+// - The dependency last applied revision must match the current source artifact revision.
+func (r *CueReconciler) checkDependencies(ctx context.Context,
+	obj *cuev1.CueExport,
+	source sourcev1.Source) error {
+
+	// Convert the Kustomization object to Unstructured for CEL evaluation.
+	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+	if err != nil {
+		return fmt.Errorf("failed to convert CueExport to unstructured: %w", err)
+	}
+
+	for _, depRef := range obj.Spec.DependsOn {
+		// Check if the dependency exists by querying
+		// the API server bypassing the cache.
+		if depRef.Namespace == "" {
+			depRef.Namespace = obj.GetNamespace()
 		}
-		dName := types.NamespacedName{
-			Namespace: d.Namespace,
-			Name:      d.Name,
+		depName := types.NamespacedName{
+			Namespace: depRef.Namespace,
+			Name:      depRef.Name,
 		}
-		var k cuev1.CueExport
-		err := r.APIReader.Get(ctx, dName, &k)
+		var dep cuev1.CueExport
+		err := r.APIReader.Get(ctx, depName, &dep)
 		if err != nil {
-			return fmt.Errorf("dependency '%s' not found: %w", dName, err)
+			return fmt.Errorf("dependency '%s' not found: %w", depName, err)
 		}
 
-		if len(k.Status.Conditions) == 0 || k.Generation != k.Status.ObservedGeneration {
-			return fmt.Errorf("dependency '%s' is not ready", dName)
+		// Evaluate the CEL expression (if specified) to determine if the dependency is ready.
+		if depRef.ReadyExpr != "" {
+			ready, err := r.evalReadyExpr(ctx, depRef.ReadyExpr, objMap, &dep)
+			if err != nil {
+				return err
+			}
+			if !ready {
+				return fmt.Errorf("dependency '%s' is not ready according to readyExpr eval", depName)
+			}
 		}
 
-		if !apimeta.IsStatusConditionTrue(k.Status.Conditions, meta.ReadyCondition) {
-			return fmt.Errorf("dependency '%s' is not ready", dName)
+		// Skip the built-in readiness check if the CEL expression is provided
+		// and the AdditiveCELDependencyCheck feature gate is not enabled.
+		if depRef.ReadyExpr != "" && !r.AdditiveCELDependencyCheck {
+			continue
 		}
 
-		srcNamespace := k.Spec.SourceRef.Namespace
+		// Check if the dependency observed generation is up to date
+		// and if the dependency is in a ready state.
+		if len(dep.Status.Conditions) == 0 || dep.Generation != dep.Status.ObservedGeneration {
+			return fmt.Errorf("dependency '%s' is not ready", depName)
+		}
+		if !apimeta.IsStatusConditionTrue(dep.Status.Conditions, meta.ReadyCondition) {
+			return fmt.Errorf("dependency '%s' is not ready", depName)
+		}
+
+		// Check if the dependency source matches the current source
+		// and if so, verify that the last applied revision of the dependency
+		// matches the current source artifact revision.
+		srcNamespace := dep.Spec.SourceRef.Namespace
 		if srcNamespace == "" {
-			srcNamespace = k.GetNamespace()
+			srcNamespace = dep.GetNamespace()
 		}
-		dSrcNamespace := obj.Spec.SourceRef.Namespace
-		if dSrcNamespace == "" {
-			dSrcNamespace = obj.GetNamespace()
+		depSrcNamespace := obj.Spec.SourceRef.Namespace
+		if depSrcNamespace == "" {
+			depSrcNamespace = obj.GetNamespace()
 		}
-
-		if k.Spec.SourceRef.Name == obj.Spec.SourceRef.Name &&
-			srcNamespace == dSrcNamespace &&
-			k.Spec.SourceRef.Kind == obj.Spec.SourceRef.Kind &&
-			!source.GetArtifact().HasRevision(k.Status.LastAppliedRevision) {
-			return fmt.Errorf("dependency '%s' revision is not up to date", dName)
+		if dep.Spec.SourceRef.Name == obj.Spec.SourceRef.Name &&
+			srcNamespace == depSrcNamespace &&
+			dep.Spec.SourceRef.Kind == obj.Spec.SourceRef.Kind &&
+			!source.GetArtifact().HasRevision(dep.Status.LastAppliedRevision) {
+			return fmt.Errorf("dependency '%s' revision is not up to date", depName)
 		}
 	}
 
 	return nil
 }
 
-func (r *CueReconciler) getSource(ctx context.Context, obj *cuev1.CueExport) (sourcev1.Source, error) {
+// evalReadyExpr evaluates the CEL expression for the dependency readiness check.
+func (r *CueReconciler) evalReadyExpr(
+	ctx context.Context,
+	expr string,
+	selfMap map[string]any,
+	dep *cuev1.CueExport,
+) (bool, error) {
+	const (
+		selfName = "self"
+		depName  = "dep"
+	)
+
+	celExpr, err := cel.NewExpression(expr,
+		cel.WithCompile(),
+		cel.WithOutputType(celtypes.BoolType),
+		cel.WithStructVariables(selfName, depName))
+	if err != nil {
+		return false, reconcile.TerminalError(fmt.Errorf("failed to evaluate dependency %s: %w", dep.Name, err))
+	}
+
+	depMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(dep)
+	if err != nil {
+		return false, fmt.Errorf("failed to convert %s object to map: %w", depName, err)
+	}
+
+	vars := map[string]any{
+		selfName: selfMap,
+		depName:  depMap,
+	}
+
+	return celExpr.EvaluateBoolean(ctx, vars)
+}
+
+// getSource resolves the source reference and returns the source object containing the artifact.
+// It returns an error if the source is not found or if access is denied.
+func (r *CueReconciler) getSource(ctx context.Context,
+	obj *cuev1.CueExport) (sourcev1.Source, error) {
 	var src sourcev1.Source
 	sourceNamespace := obj.GetNamespace()
 	if obj.Spec.SourceRef.Namespace != "" {
@@ -536,15 +657,23 @@ func (r *CueReconciler) getSource(ctx context.Context, obj *cuev1.CueExport) (so
 		Name:      obj.Spec.SourceRef.Name,
 	}
 
+	// Check if cross-namespace references are allowed.
 	if r.NoCrossNamespaceRefs && sourceNamespace != obj.GetNamespace() {
 		return src, acl.AccessDeniedError(
 			fmt.Sprintf("can't access '%s/%s', cross-namespace references have been blocked",
 				obj.Spec.SourceRef.Kind, namespacedName))
 	}
 
+	// Check if ExternalArtifact kind is allowed.
+	if obj.Spec.SourceRef.Kind == sourcev1.ExternalArtifactKind && !r.AllowExternalArtifact {
+		return src, acl.AccessDeniedError(
+			fmt.Sprintf("can't access '%s/%s', %s feature gate is disabled",
+				obj.Spec.SourceRef.Kind, namespacedName, "ExternalArtifact"))
+	}
+
 	switch obj.Spec.SourceRef.Kind {
-	case sourcev1b2.OCIRepositoryKind:
-		var repository sourcev1b2.OCIRepository
+	case sourcev1.OCIRepositoryKind:
+		var repository sourcev1.OCIRepository
 		err := r.Client.Get(ctx, namespacedName, &repository)
 		if err != nil {
 			if apierrors.IsNotFound(err) {
@@ -573,6 +702,16 @@ func (r *CueReconciler) getSource(ctx context.Context, obj *cuev1.CueExport) (so
 			return src, fmt.Errorf("unable to get source '%s': %w", namespacedName, err)
 		}
 		src = &bucket
+	case sourcev1.ExternalArtifactKind:
+		var ea sourcev1.ExternalArtifact
+		err := r.Client.Get(ctx, namespacedName, &ea)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return src, err
+			}
+			return src, fmt.Errorf("unable to get source '%s': %w", namespacedName, err)
+		}
+		src = &ea
 	default:
 		return src, fmt.Errorf("source `%s` kind '%s' not supported",
 			obj.Spec.SourceRef.Name, obj.Spec.SourceRef.Kind)
@@ -622,33 +761,33 @@ func (r *CueReconciler) values(ctx context.Context, root string, obj *cuev1.CueE
 	return values, nil
 }
 
-func (r *CueReconciler) getValueFromSource(ctx context.Context, namespace string, tagvar *cuev1.TagVarSource) (string, error) {
-	if tagvar.ConfigMapKeyRef != nil {
+func (r *CueReconciler) getValueFromSource(ctx context.Context, namespace string, tag *cuev1.TagSource) (string, error) {
+	if tag.ConfigMapKeyRef != nil {
 		ref := types.NamespacedName{
 			Namespace: namespace,
-			Name:      tagvar.ConfigMapKeyRef.Name,
+			Name:      tag.ConfigMapKeyRef.Name,
 		}
 		var cm corev1.ConfigMap
 		if err := r.Get(ctx, ref, &cm); err != nil {
 			return "", fmt.Errorf("failed to get configmap: %w", err)
 		}
-		val, ok := cm.Data[tagvar.ConfigMapKeyRef.Key]
+		val, ok := cm.Data[tag.ConfigMapKeyRef.Key]
 		if !ok {
-			return "", fmt.Errorf("missing key %s in ConfigMap %s", tagvar.ConfigMapKeyRef.Key, tagvar.ConfigMapKeyRef.Name)
+			return "", fmt.Errorf("missing key %s in ConfigMap %s", tag.ConfigMapKeyRef.Key, tag.ConfigMapKeyRef.Name)
 		}
 		return val, nil
-	} else if tagvar.SecretKeyRef != nil {
+	} else if tag.SecretKeyRef != nil {
 		ref := types.NamespacedName{
 			Namespace: namespace,
-			Name:      tagvar.SecretKeyRef.Name,
+			Name:      tag.SecretKeyRef.Name,
 		}
 		var cm corev1.Secret
 		if err := r.Get(ctx, ref, &cm); err != nil {
 			return "", fmt.Errorf("failed to get secret: %w", err)
 		}
-		val, ok := cm.Data[tagvar.SecretKeyRef.Key]
+		val, ok := cm.Data[tag.SecretKeyRef.Key]
 		if !ok {
-			return "", fmt.Errorf("missing key %s in Secret %s", tagvar.SecretKeyRef.Key, tagvar.SecretKeyRef.Name)
+			return "", fmt.Errorf("missing key %s in Secret %s", tag.SecretKeyRef.Key, tag.SecretKeyRef.Name)
 		}
 		return string(val), nil
 	}
@@ -661,7 +800,7 @@ var (
 	metadataNamePath = cue.ParsePath("metadata.name")
 )
 
-func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev1.CueExport) ([]*unstructured.Unstructured, error) {
+func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev1.CueExport) ([]byte, error) {
 	log := ctrl.LoggerFrom(ctx)
 	timeout := obj.GetTimeout()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -669,7 +808,7 @@ func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev
 
 	log.V(1).Info("building resources", "len(values)", len(values))
 
-	objects := []*unstructured.Unstructured{}
+	resources := [][]byte{}
 	errors := []error{}
 	for _, value := range values {
 		if ctx.Err() != nil {
@@ -685,11 +824,11 @@ func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev
 					errors = append(errors, err)
 				} else {
 					result := value.Context().BuildExpr(ex, cue.Scope(value), cue.InferBuiltins(true))
-					moreObjects, err := unstructuredListFromValues(result)
+					moreResources, err := marshalMaybeList(result)
 					if err != nil {
 						errors = append(errors, err)
 					}
-					objects = append(objects, moreObjects...)
+					resources = append(resources, moreResources...)
 				}
 			}
 		} else {
@@ -702,12 +841,12 @@ func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev
 
 					log.V(1).Info("found for apiVersion, kind, and metadata.name fields in struct", "path", v.Path())
 
-					object, err := unstructuredFromValue(v)
+					resource, err := v.MarshalJSON()
 					if err != nil {
 						errors = append(errors, err)
 						log.V(1).Info("added err to to errors", "error", err)
 					} else {
-						objects = append(objects, object)
+						resources = append(resources, resource)
 						log.V(1).Info("added value to objects")
 					}
 
@@ -722,11 +861,11 @@ func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev
 		return nil, kerrors.NewAggregate(errors)
 	}
 
-	if len(objects) == 0 {
+	if len(resources) == 0 {
 		return nil, fmt.Errorf("found no objects in values")
 	}
 
-	return objects, nil
+	return bytes.Join(resources, []byte("\n---\n")), nil
 }
 
 func (r *CueReconciler) checkGates(ctx context.Context, values []cue.Value, obj *cuev1.CueExport) error {
@@ -755,56 +894,41 @@ func (r *CueReconciler) checkGates(ctx context.Context, values []cue.Value, obj 
 	return kerrors.NewAggregate(errors)
 }
 
-func unstructuredFromValue(value cue.Value) (*unstructured.Unstructured, error) {
-	resource := &unstructured.Unstructured{}
-	bytes, err := value.MarshalJSON()
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal json: %s", err)
-	}
-
-	err = resource.UnmarshalJSON(bytes)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal json: %s", err)
-	} else {
-		return resource, nil
-	}
-}
-
-func unstructuredListFromValues(value cue.Value) ([]*unstructured.Unstructured, error) {
+func marshalMaybeList(value cue.Value) ([][]byte, error) {
 	errors := []error{}
+	objects := [][]byte{}
 	switch value.Kind() {
 	case cue.StructKind:
-		obj, err := unstructuredFromValue(value)
+		obj, err := value.MarshalJSON()
 		if err != nil {
 			return nil, err
 		}
-		return []*unstructured.Unstructured{obj}, nil
+		objects = append(objects, obj)
 	case cue.ListKind:
-		objects := []*unstructured.Unstructured{}
+		objects := [][]byte{}
 		items, err := value.List()
 		if err != nil {
 			return nil, err
 		}
 		for hasNext := items.Next(); hasNext; hasNext = items.Next() {
-			object, err := unstructuredFromValue(items.Value())
+			object, err := items.Value().MarshalJSON()
 			if err != nil {
 				errors = append(errors, err)
 			} else {
 				objects = append(objects, object)
 			}
 		}
-		return objects, kerrors.NewAggregate(errors)
 	default:
 		return nil, fmt.Errorf("unknown kubernetes object kind %v", value)
 	}
+	return objects, kerrors.NewAggregate(errors)
 }
 
 func (r *CueReconciler) apply(ctx context.Context,
 	manager *ssa.ResourceManager,
 	obj *cuev1.CueExport,
 	revision string,
+	originRevision string,
 	objects []*unstructured.Unstructured) (bool, *ssa.ChangeSet, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -875,101 +999,35 @@ func (r *CueReconciler) apply(ctx context.Context,
 		},
 	}
 
-	// contains only CRDs and Namespaces
-	var defStage []*unstructured.Unstructured
-
-	// contains only Kubernetes Class types e.g.: RuntimeClass, PriorityClass,
-	// StorageClass, VolumeSnapshotClass, IngressClass, GatewayClass, ClusterClass, etc
-	var classStage []*unstructured.Unstructured
-
-	// contains all objects except for CRDs, Namespaces and Class type objects
-	var resStage []*unstructured.Unstructured
-
 	// contains the objects' metadata after apply
 	resultSet := ssa.NewChangeSet()
-
-	for _, u := range objects {
-		switch {
-		case ssautil.IsClusterDefinition(u):
-			defStage = append(defStage, u)
-		case strings.HasSuffix(u.GetKind(), "Class"):
-			classStage = append(classStage, u)
-		default:
-			resStage = append(resStage, u)
-		}
-
-	}
-
 	var changeSetLog strings.Builder
 
-	// validate, apply and wait for CRDs and Namespaces to register
-	if len(defStage) > 0 {
-		changeSet, err := manager.ApplyAll(ctx, defStage, applyOpts)
-		if err != nil {
-			return false, nil, err
-		}
+	if len(objects) > 0 {
+		changeSet, err := manager.ApplyAllStaged(ctx, objects, applyOpts)
 
 		if changeSet != nil && len(changeSet.Entries) > 0 {
 			resultSet.Append(changeSet.Entries)
 
-			log.Info("server-side apply for cluster definitions completed", "output", changeSet.ToMap())
+			// filter out the objects that have not changed
 			for _, change := range changeSet.Entries {
 				if HasChanged(change.Action) {
 					changeSetLog.WriteString(change.String() + "\n")
 				}
 			}
-
-			if err := manager.WaitForSet(changeSet.ToObjMetadataSet(), ssa.WaitOptions{
-				Interval: 2 * time.Second,
-				Timeout:  obj.GetTimeout(),
-			}); err != nil {
-				return false, nil, err
-			}
-		}
-	}
-
-	// validate, apply and wait for Class type objects to register
-	if len(classStage) > 0 {
-		changeSet, err := manager.ApplyAll(ctx, classStage, applyOpts)
-		if err != nil {
-			return false, nil, err
 		}
 
-		if changeSet != nil && len(changeSet.Entries) > 0 {
-			resultSet.Append(changeSet.Entries)
-
-			log.Info("server-side apply for cluster class types completed", "output", changeSet.ToMap())
-			for _, change := range changeSet.Entries {
-				if HasChanged(change.Action) {
-					changeSetLog.WriteString(change.String() + "\n")
-				}
-			}
-
-			if err := manager.WaitForSet(changeSet.ToObjMetadataSet(), ssa.WaitOptions{
-				Interval: 2 * time.Second,
-				Timeout:  obj.GetTimeout(),
-			}); err != nil {
-				return false, nil, err
-			}
-		}
-	}
-
-	// sort by kind, validate and apply all the others objects
-	sort.Sort(ssa.SortableUnstructureds(resStage))
-	if len(resStage) > 0 {
-		changeSet, err := manager.ApplyAll(ctx, resStage, applyOpts)
+		// include the change log in the error message in case af a partial apply
 		if err != nil {
 			return false, nil, fmt.Errorf("%w\n%s", err, changeSetLog.String())
 		}
 
+		// log all applied objects
 		if changeSet != nil && len(changeSet.Entries) > 0 {
-			resultSet.Append(changeSet.Entries)
-
-			log.Info("server-side apply completed", "output", changeSet.ToMap(), "revision", revision)
-			for _, change := range changeSet.Entries {
-				if HasChanged(change.Action) {
-					changeSetLog.WriteString(change.String() + "\n")
-				}
+			if r.GroupChangeLog {
+				log.Info("server-side apply completed", "output", changeSet.ToGroupedMap(), "revision", revision)
+			} else {
+				log.Info("server-side apply completed", "output", changeSet.ToMap(), "revision", revision)
 			}
 		}
 	}
@@ -977,7 +1035,7 @@ func (r *CueReconciler) apply(ctx context.Context,
 	// emit event only if the server-side apply resulted in changes
 	applyLog := strings.TrimSuffix(changeSetLog.String(), "\n")
 	if applyLog != "" {
-		r.event(obj, revision, eventv1.EventSeverityInfo, applyLog, nil)
+		r.event(obj, revision, originRevision, eventv1.EventSeverityInfo, applyLog, nil)
 	}
 
 	return applyLog != "", resultSet, nil
@@ -988,6 +1046,7 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 	patcher *patch.SerialPatcher,
 	obj *cuev1.CueExport,
 	revision string,
+	originRevision string,
 	isNewRevision bool,
 	drifted bool,
 	objects object.ObjMetadataSet) error {
@@ -1033,7 +1092,39 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 	}
 
 	// Check the health with a default timeout of 30sec shorter than the reconciliation interval.
-	if err := manager.WaitForSet(toCheck, ssa.WaitOptions{
+	healthCtx := ctx
+	if r.CancelHealthCheckOnNewRevision {
+		// Create a cancellable context for health checks that monitors for new revisions
+		var cancel context.CancelFunc
+		healthCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+
+		// Start monitoring for new revisions to allow early cancellation
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-healthCtx.Done():
+					return
+				case <-ticker.C:
+					// Get the latest source artifact
+					latestSrc, err := r.getSource(ctx, obj)
+					if err == nil && latestSrc.GetArtifact() != nil {
+						if newRevision := latestSrc.GetArtifact().Revision; newRevision != revision {
+							const msg = "New revision detected during health check, cancelling"
+							r.event(obj, revision, originRevision, eventv1.EventSeverityInfo, msg, nil)
+							ctrl.LoggerFrom(ctx).Info(msg, "current", revision, "new", newRevision)
+							cancel()
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+	if err := manager.WaitForSetWithContext(healthCtx, toCheck, ssa.WaitOptions{
 		Interval: 5 * time.Second,
 		Timeout:  obj.GetTimeout(),
 		FailFast: r.FailFast,
@@ -1046,7 +1137,7 @@ func (r *CueReconciler) checkHealth(ctx context.Context,
 	// Emit recovery event if the previous health check failed.
 	msg := fmt.Sprintf("Health check passed in %s", time.Since(checkStart).String())
 	if !wasHealthy || (isNewRevision && drifted) {
-		r.event(obj, revision, eventv1.EventSeverityInfo, msg, nil)
+		r.event(obj, revision, originRevision, eventv1.EventSeverityInfo, msg, nil)
 	}
 
 	conditions.MarkTrue(obj, meta.HealthyCondition, meta.SucceededReason, "%s", msg)
@@ -1061,6 +1152,7 @@ func (r *CueReconciler) prune(ctx context.Context,
 	manager *ssa.ResourceManager,
 	obj *cuev1.CueExport,
 	revision string,
+	originRevision string,
 	objects []*unstructured.Unstructured) (bool, error) {
 	if !obj.Spec.Prune {
 		return false, nil
@@ -1085,34 +1177,74 @@ func (r *CueReconciler) prune(ctx context.Context,
 	// emit event only if the prune operation resulted in changes
 	if changeSet != nil && len(changeSet.Entries) > 0 {
 		log.Info(fmt.Sprintf("garbage collection completed: %s", changeSet.String()))
-		r.event(obj, revision, eventv1.EventSeverityInfo, changeSet.String(), nil)
+		r.event(obj, revision, originRevision, eventv1.EventSeverityInfo, changeSet.String(), nil)
 		return true, nil
 	}
 
 	return false, nil
 }
 
+// finalizerShouldDeleteResources determines if resources should be deleted
+// based on the object's inventory and deletion policy.
+// A suspended CueExport or one without an inventory will not delete resources.
+func finalizerShouldDeleteResources(obj *cuev1.CueExport) bool {
+	if obj.Spec.Suspend {
+		return false
+	}
+
+	if obj.Status.Inventory == nil || len(obj.Status.Inventory.Entries) == 0 {
+		return false
+	}
+
+	switch obj.GetDeletionPolicy() {
+	case cuev1.DeletionPolicyMirrorPrune:
+		return obj.Spec.Prune
+	case cuev1.DeletionPolicyDelete:
+		return true
+	case cuev1.DeletionPolicyWaitForTermination:
+		return true
+	default:
+		return false
+	}
+}
+
+// finalize handles the finalization logic for a Kustomization resource during its deletion process.
+// Managed resources are pruned based on the deletion policy and suspended state of the Kustomization.
+// When the policy is set to WaitForTermination, the function blocks and waits for the resources
+// to be terminated by the Kubernetes Garbage Collector for the specified timeout duration.
+// If the service account used for impersonation is no longer available or if a timeout occurs
+// while waiting for resources to be terminated, an error is logged and the finalizer is removed.
 func (r *CueReconciler) finalize(ctx context.Context,
 	obj *cuev1.CueExport) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
-	if obj.Spec.Prune &&
-		!obj.Spec.Suspend &&
-		obj.Status.Inventory != nil &&
-		obj.Status.Inventory.Entries != nil {
+	if finalizerShouldDeleteResources(obj) {
 		objects, _ := inventory.List(obj.Status.Inventory)
 
-		impersonation := runtimeClient.NewImpersonator(
-			r.Client,
-			r.StatusPoller,
-			r.PollingOpts,
-			obj.Spec.KubeConfig,
-			r.KubeConfigOpts,
-			r.DefaultServiceAccount,
-			obj.Spec.ServiceAccountName,
-			obj.GetNamespace(),
-		)
+		var impersonatorOpts []runtimeClient.ImpersonatorOption
+		var mustImpersonate bool
+		if r.DefaultServiceAccount != "" || obj.Spec.ServiceAccountName != "" {
+			mustImpersonate = true
+			impersonatorOpts = append(impersonatorOpts,
+				runtimeClient.WithServiceAccount(r.DefaultServiceAccount, obj.Spec.ServiceAccountName, obj.GetNamespace()))
+		}
+		if obj.Spec.KubeConfig != nil {
+			mustImpersonate = true
+			provider := r.getProviderRESTConfigFetcher(obj)
+			impersonatorOpts = append(impersonatorOpts,
+				runtimeClient.WithKubeConfig(obj.Spec.KubeConfig, r.KubeConfigOpts, obj.GetNamespace(), provider))
+		}
+		if r.ClusterReader != nil {
+			impersonatorOpts = append(impersonatorOpts, runtimeClient.WithPolling(r.ClusterReader))
+		}
+		impersonation := runtimeClient.NewImpersonator(r.Client, impersonatorOpts...)
 		if impersonation.CanImpersonate(ctx) {
-			kubeClient, _, err := impersonation.GetClient(ctx)
+			var kubeClient client.Client
+			var err error
+			if mustImpersonate {
+				kubeClient, _, err = impersonation.GetClient(ctx)
+			} else {
+				kubeClient = r.Client
+			}
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -1133,36 +1265,59 @@ func (r *CueReconciler) finalize(ctx context.Context,
 
 			changeSet, err := resourceManager.DeleteAll(ctx, objects, opts)
 			if err != nil {
-				r.event(obj, obj.Status.LastAppliedRevision, eventv1.EventSeverityError, "pruning for deleted resource failed", nil)
+				r.event(obj, obj.Status.LastAppliedRevision, obj.Status.LastAppliedOriginRevision, eventv1.EventSeverityError, "pruning for deleted resource failed", nil)
 				// Return the error so we retry the failed garbage collection
 				return ctrl.Result{}, err
 			}
 
 			if changeSet != nil && len(changeSet.Entries) > 0 {
-				r.event(obj, obj.Status.LastAppliedRevision, eventv1.EventSeverityInfo, changeSet.String(), nil)
+				// Emit event with the resources marked for deletion.
+				r.event(obj, obj.Status.LastAppliedRevision, obj.Status.LastAppliedOriginRevision, eventv1.EventSeverityInfo, changeSet.String(), nil)
+
+				// Wait for the resources marked for deletion to be terminated.
+				if obj.GetDeletionPolicy() == cuev1.DeletionPolicyWaitForTermination {
+					if err := resourceManager.WaitForSetTermination(changeSet, ssa.WaitOptions{
+						Interval: 2 * time.Second,
+						Timeout:  obj.GetTimeout(),
+					}); err != nil {
+						// Emit an event and log the error if a timeout occurs.
+						msg := "failed to wait for resources termination"
+						log.Error(err, msg)
+						r.event(obj, obj.Status.LastAppliedRevision, obj.Status.LastAppliedOriginRevision, eventv1.EventSeverityError, msg, nil)
+					}
+				}
 			}
 		} else {
 			// when the account to impersonate is gone, log the stale objects and continue with the finalization
 			msg := fmt.Sprintf("unable to prune objects: \n%s", ssautil.FmtUnstructuredList(objects))
 			log.Error(fmt.Errorf("skiping pruning, failed to find account to impersonate"), msg)
-			r.event(obj, obj.Status.LastAppliedRevision, eventv1.EventSeverityError, msg, nil)
+			r.event(obj, obj.Status.LastAppliedRevision, obj.Status.LastAppliedOriginRevision, eventv1.EventSeverityError, msg, nil)
 		}
 	}
 
 	// Remove our finalizer from the list and update it
 	controllerutil.RemoveFinalizer(obj, cuev1.CueExportFinalizer)
+
+	// Cleanup caches.
+	for _, op := range cuev1.AllMetrics {
+		r.TokenCache.DeleteEventsForObject(cuev1.CueExportKind, obj.GetName(), obj.GetNamespace(), op)
+	}
+
 	// Stop reconciliation as the object is being deleted
 	return ctrl.Result{}, nil
 }
 
 func (r *CueReconciler) event(obj *cuev1.CueExport,
-	revision, severity, msg string,
+	revision, originRevision, severity, msg string,
 	metadata map[string]string) {
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
 	if revision != "" {
-		metadata[cuev1.GroupVersion.Group+"/revision"] = revision
+		metadata[cuev1.GroupVersion.Group+"/"+eventv1.MetaRevisionKey] = revision
+	}
+	if originRevision != "" {
+		metadata[cuev1.GroupVersion.Group+"/"+eventv1.MetaOriginRevisionKey] = originRevision
 	}
 
 	reason := severity
@@ -1221,7 +1376,7 @@ func (r *CueReconciler) patch(ctx context.Context,
 	patchOpts = append(patchOpts,
 		patch.WithOwnedConditions{Conditions: ownedConditions},
 		patch.WithForceOverwriteConditions{},
-		patch.WithFieldOwner(r.statusManager),
+		patch.WithFieldOwner(r.StatusManager),
 	)
 
 	// Patch the object status, conditions and finalizers.
@@ -1236,4 +1391,59 @@ func (r *CueReconciler) patch(ctx context.Context,
 	}
 
 	return nil
+}
+
+// getClientAndPoller creates a status poller with the custom status readers
+// from CEL expressions and the custom job status reader, and returns the
+// Kubernetes client of the controller and the status poller.
+// Should be used for reconciliations that are not configured to use
+// ServiceAccount impersonation or kubeconfig.
+func (r *CueReconciler) getClientAndPoller(
+	readerCtors []func(apimeta.RESTMapper) engine.StatusReader,
+) (client.Client, *polling.StatusPoller) {
+
+	readers := make([]engine.StatusReader, 0, 1+len(readerCtors))
+	readers = append(readers, statusreaders.NewCustomJobStatusReader(r.Mapper))
+	for _, ctor := range readerCtors {
+		readers = append(readers, ctor(r.Mapper))
+	}
+
+	poller := polling.NewStatusPoller(r.Client, r.Mapper, polling.Options{
+		CustomStatusReaders:  readers,
+		ClusterReaderFactory: r.ClusterReader,
+	})
+
+	return r.Client, poller
+}
+
+// getProviderRESTConfigFetcher returns a ProviderRESTConfigFetcher for the
+// Kustomization object, which is used to fetch the kubeconfig for a ConfigMap
+// reference in the Kustomization spec.
+func (r *CueReconciler) getProviderRESTConfigFetcher(obj *cuev1.CueExport) runtimeClient.ProviderRESTConfigFetcher {
+	var provider runtimeClient.ProviderRESTConfigFetcher
+	if kc := obj.Spec.KubeConfig; kc != nil && kc.SecretRef == nil && kc.ConfigMapRef != nil {
+		var opts []auth.Option
+		if r.TokenCache != nil {
+			involvedObject := cache.InvolvedObject{
+				Kind:      cuev1.CueExportKind,
+				Name:      obj.GetName(),
+				Namespace: obj.GetNamespace(),
+				Operation: cuev1.MetricFetchKubeConfig,
+			}
+			opts = append(opts, auth.WithCache(*r.TokenCache, involvedObject))
+		}
+		provider = runtimeClient.ProviderRESTConfigFetcher(authutils.GetRESTConfigFetcher(opts...))
+	}
+	return provider
+}
+
+// getOriginRevision returns the origin revision of the source artifact,
+// or the empty string if it's not present, or if the artifact itself
+// is not present.
+func getOriginRevision(src sourcev1.Source) string {
+	a := src.GetArtifact()
+	if a == nil {
+		return ""
+	}
+	return a.Metadata[OCIArtifactOriginRevisionAnnotation]
 }

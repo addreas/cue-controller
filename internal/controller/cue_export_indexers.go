@@ -20,19 +20,20 @@ import (
 	"context"
 	"fmt"
 
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
+	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/runtime/dependency"
-	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 )
 
 func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		repo, ok := obj.(interface {
-			GetArtifact() *sourcev1.Artifact
+			GetArtifact() *meta.Artifact
 		})
 		if !ok {
 			panic(fmt.Sprintf("Expected an object conformed with GetArtifact() method, but got a %T", obj))
@@ -57,14 +58,9 @@ func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) handler.Map
 			}
 			dd = append(dd, d.DeepCopy())
 		}
-		sorted, err := dependency.Sort(dd)
+		reqs, err := sortAndEnqueue(dd)
 		if err != nil {
 			return nil
-		}
-		reqs := make([]reconcile.Request, len(sorted))
-		for i := range sorted {
-			reqs[i].NamespacedName.Name = sorted[i].Name
-			reqs[i].NamespacedName.Namespace = sorted[i].Namespace
 		}
 		return reqs
 	}
@@ -87,4 +83,55 @@ func (r *CueReconciler) indexBy(kind string) func(o client.Object) []string {
 
 		return nil
 	}
+}
+
+// requestsForConfigDependency enqueues requests for watched ConfigMaps or Secrets
+// according to the specified index.
+func (r *CueReconciler) requestsForConfigDependency(
+	index string) func(ctx context.Context, o client.Object) []reconcile.Request {
+
+	return func(ctx context.Context, o client.Object) []reconcile.Request {
+		log := ctrl.LoggerFrom(ctx).WithValues("index", index, "objectRef", map[string]string{
+			"name":      o.GetName(),
+			"namespace": o.GetNamespace(),
+		})
+
+		// List Kustomizations that have a dependency on the ConfigMap or Secret.
+		var list cuev1.CueExportList
+		if err := r.List(ctx, &list, client.MatchingFields{
+			index: client.ObjectKeyFromObject(o).String(),
+		}); err != nil {
+			log.Error(err, "failed to list Kustomizations for config dependency change")
+			return nil
+		}
+
+		// Sort the Kustomizations by their dependencies to ensure
+		// that dependent Kustomizations are reconciled after their dependencies.
+		dd := make([]dependency.Dependent, 0, len(list.Items))
+		for i := range list.Items {
+			dd = append(dd, &list.Items[i])
+		}
+
+		// Enqueue requests for each Kustomization in the list.
+		reqs, err := sortAndEnqueue(dd)
+		if err != nil {
+			log.Error(err, "failed to sort dependencies for config dependency change")
+			return nil
+		}
+		return reqs
+	}
+}
+
+// sortAndEnqueue sorts the dependencies and returns a slice of reconcile.Requests.
+func sortAndEnqueue(dd []dependency.Dependent) ([]reconcile.Request, error) {
+	sorted, err := dependency.Sort(dd)
+	if err != nil {
+		return nil, err
+	}
+	reqs := make([]reconcile.Request, len(sorted))
+	for i := range sorted {
+		reqs[i].NamespacedName.Name = sorted[i].Name
+		reqs[i].NamespacedName.Namespace = sorted[i].Namespace
+	}
+	return reqs, nil
 }

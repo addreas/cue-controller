@@ -18,7 +18,10 @@ limitations under the License.
 // and their default states.
 package features
 
-import feathelper "github.com/fluxcd/pkg/runtime/features"
+import (
+	"github.com/fluxcd/pkg/auth"
+	feathelper "github.com/fluxcd/pkg/runtime/features"
+)
 
 const (
 	// CacheSecretsAndConfigMaps controls whether Secrets and ConfigMaps should
@@ -44,6 +47,27 @@ const (
 	// should fail if a variable without a default value is declared in files
 	// but is missing from the input vars.
 	StrictPostBuildSubstitutions = "StrictPostBuildSubstitutions"
+
+	// GroupChangeLog controls whether to group Kubernetes objects names in log output
+	// to reduce cardinality of logs.
+	GroupChangeLog = "GroupChangeLog"
+
+	// AdditiveCELDependencyCheck controls whether the CEL dependency check
+	// should be additive, meaning that the built-in readiness check will
+	// be added to the user-defined CEL expressions.
+	AdditiveCELDependencyCheck = "AdditiveCELDependencyCheck"
+
+	// ExternalArtifact controls whether the ExternalArtifact source type is enabled.
+	ExternalArtifact = "ExternalArtifact"
+
+	// CancelHealthCheckOnNewRevision controls whether ongoing health checks
+	// should be cancelled when a new source revision becomes available.
+	//
+	// When enabled, if a new revision is detected while waiting for resources
+	// to become ready, the current health check will be cancelled to allow
+	// immediate processing of the new revision. This can help avoid getting
+	// stuck on failing deployments when fixes are available.
+	CancelHealthCheckOnNewRevision = "CancelHealthCheckOnNewRevision"
 )
 
 var features = map[string]bool{
@@ -59,6 +83,22 @@ var features = map[string]bool{
 	// StrictPostBuildSubstitutions
 	// opt-in from v1.3
 	StrictPostBuildSubstitutions: false,
+	// GroupChangeLog
+	// opt-in from v1.5
+	GroupChangeLog: false,
+	// AdditiveCELDependencyCheck
+	// opt-in from v1.7
+	AdditiveCELDependencyCheck: false,
+	// ExternalArtifact
+	// opt-in from v1.7
+	ExternalArtifact: false,
+	// CancelHealthCheckOnNewRevision
+	// opt-in from v1.7
+	CancelHealthCheckOnNewRevision: false,
+}
+
+func init() {
+	auth.SetFeatureGates(features)
 }
 
 // FeatureGates contains a list of all supported feature gates and

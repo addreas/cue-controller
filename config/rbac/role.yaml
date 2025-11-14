@@ -22,6 +22,12 @@ rules:
   - create
   - patch
 - apiGroups:
+  - ""
+  resources:
+  - serviceaccounts/token
+  verbs:
+  - create
+- apiGroups:
   - cue.toolkit.fluxcd.io
   resources:
   - cueexports

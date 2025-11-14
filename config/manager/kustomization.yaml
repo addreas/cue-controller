@@ -3,6 +3,16 @@ kind: Kustomization
 resources:
   - deployment.yaml
 images:
+<<<<<<< HEAD
   - name: ghcr.io/addreas/cue-controller
     newName: ghcr.io/addreas/cue-controller
     newTag: v1.4.0-cue
+||||||| d7bad03
+  - name: fluxcd/kustomize-controller
+    newName: fluxcd/kustomize-controller
+    newTag: v1.4.0
+=======
+  - name: fluxcd/kustomize-controller
+    newName: fluxcd/kustomize-controller
+    newTag: v1.7.0
+>>>>>>> upstream/main

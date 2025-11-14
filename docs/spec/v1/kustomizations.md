@@ -115,8 +115,9 @@ Artifact containing the YAML manifests. It has two required fields:
 
 - `kind`: The Kind of the referred Source object. Supported Source types:
   + [GitRepository](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1/gitrepositories.md)
-  + [OCIRepository](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1beta2/ocirepositories.md)
+  + [OCIRepository](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1/ocirepositories.md)
   + [Bucket](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1/buckets.md)
+  + [ExternalArtifact](https://github.com/fluxcd/source-controller/blob/main/docs/spec/v1/externalartifacts.md) (requires `--feature-gates=ExternalArtifact=true` flag)
 - `name`: The Name of the referred Source object.
 
 #### Cross-namespace references
@@ -168,6 +169,47 @@ kustomize.toolkit.fluxcd.io/prune: disabled
 
 For details on how the controller tracks Kubernetes objects and determines what
 to garbage collect, see [`.status.inventory`](#inventory).
+
+### Deletion policy
+
+`.spec.deletionPolicy` is an optional field that allows control over
+garbage collection when a Kustomization object is deleted. The default behavior
+is to mirror the configuration of [`.spec.prune`](#prune).
+
+Valid values:
+
+- `MirrorPrune` (default) - The managed resources will be deleted if `prune` is
+  `true` and orphaned if `false`.
+- `Delete` - Ensure the managed resources are deleted before the Kustomization
+   is deleted.
+- `WaitForTermination` - Ensure the managed resources are deleted and wait for
+  termination before the Kustomization is deleted.
+- `Orphan` - Leave the managed resources when the Kustomization is deleted.
+
+The `WaitForTermination` deletion policy blocks and waits for the managed
+resources to be removed from etcd by the Kubernetes garbage collector.
+The wait time is determined by the `.spec.timeout` field. If a timeout occurs,
+the controller will stop waiting for the deletion of the resources,
+log an error and will allow the Kustomization to be deleted.
+
+For special cases when the managed resources are removed by other means (e.g.
+the deletion of the namespace specified with
+[`.spec.targetNamespace`](#target-namespace)), you can set the deletion policy
+to `Orphan`:
+
+```yaml
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: app
+  namespace: default
+spec:
+  # ...omitted for brevity
+  targetNamespace: app-namespace
+  prune: true
+  deletionPolicy: Orphan
+```
 
 ### Interval
 
@@ -292,11 +334,11 @@ spec:
     kind: GitRepository
     name: webapp
   healthChecks:
-    - apiVersion: helm.toolkit.fluxcd.io/v2beta1
+    - apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease
       name: frontend
       namespace: dev
-    - apiVersion: helm.toolkit.fluxcd.io/v2beta1
+    - apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease
       name: backend
       namespace: dev
@@ -305,6 +347,69 @@ spec:
 
 If all the HelmRelease objects are successfully installed or upgraded, then
 the Kustomization will be marked as ready.
+
+### Health check expressions
+
+`.spec.healthCheckExprs` can be used to define custom logic for performing
+health checks on custom resources. This is done through Common Expression
+Language (CEL) expressions. This field accepts a list of objects with the
+following fields:
+
+- `apiVersion`: The API version of the custom resource. Required.
+- `kind`: The kind of the custom resource. Required.
+- `current`: A required CEL expression that returns `true` if the resource is ready.
+- `inProgress`: An optional CEL expression that returns `true` if the resource
+  is still being reconciled.
+- `failed`: An optional CEL expression that returns `true` if the resource
+  failed to reconcile.
+
+The controller will evaluate the expressions in the following order:
+
+1. `inProgress` if specified
+2. `failed` if specified
+3. `current`
+
+The first expression that evaluates to `true` will determine the health
+status of the custom resource.
+
+For example, to define a set of health check expressions for the `SealedSecret`
+custom resource:
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: sealed-secrets
+  namespace: flux-system
+spec:
+  interval: 5m
+  path: ./path/to/sealed/secrets
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  timeout: 1m
+  wait: true # Tells the controller to wait for all resources to be ready by performing health checks.
+  healthCheckExprs:
+    - apiVersion: bitnami.com/v1alpha1
+      kind: SealedSecret
+      failed: status.conditions.filter(e, e.type == 'Synced').all(e, e.status == 'False')
+      current: status.conditions.filter(e, e.type == 'Synced').all(e, e.status == 'True')
+```
+
+A common error is writing expressions that reference fields that do not
+exist in the custom resource. This will cause the controller to wait
+for the resource to be ready until the timeout is reached. To avoid this,
+make sure your CEL expressions are correct. The
+[CEL Playground](https://playcel.undistro.io/) is a useful resource for
+this task. The input passed to each expression is the custom resource
+object itself. You can check for field existence with the
+[`has(...)` CEL macro](https://github.com/google/cel-spec/blob/master/doc/langdef.md#macros),
+just be aware that `has(status)` errors if `status` does not (yet) exist
+on the top level of the resource you are using.
+
+It's worth checking if [the library](/flux/cheatsheets/cel-healthchecks/)
+has expressions for the custom resources you are using.
 
 ### Wait
 
@@ -382,6 +487,51 @@ is running before deploying applications inside the mesh.
 
 **Note:** Circular dependencies between Kustomizations must be avoided,
 otherwise the interdependent Kustomizations will never be applied on the cluster.
+
+#### Dependency Ready Expression
+
+`.spec.dependsOn[].readyExpr` is an optional field that can be used to define a CEL expression
+to determine the readiness of a Kustomization dependency. 
+
+This is helpful for when custom logic is needed to determine if a dependency is ready.
+For example, when performing a lockstep upgrade, the `readyExpr` can be used to
+verify that a dependency has a matching version label before proceeding with the
+reconciliation of the dependent Kustomization.
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: app-backend
+  namespace: apps
+  labels:
+    app/version: v1.2.3
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: app-frontend
+  namespace: apps
+  labels:
+    app/version: v1.2.3
+spec:
+  dependsOn:
+    - name: app-backend
+      readyExpr: >
+        dep.metadata.labels['app/version'] == self.metadata.labels['app/version'] &&
+        dep.status.conditions.filter(e, e.type == 'Ready').all(e, e.status == 'True') &&
+        dep.metadata.generation == dep.status.observedGeneration
+```
+
+The CEL expression contains the following variables:
+
+- `dep`: The dependency Kustomization object being evaluated.
+- `self`: The Kustomization object being reconciled.
+
+**Note:** When `readyExpr` is specified, the built-in readiness check is replaced by the logic
+defined in the CEL expression. You can configure the controller to run both the CEL expression
+evaluation and the built-in readiness check, with the `AdditiveCELDependencyCheck`
+[feature gate](https://fluxcd.io/flux/components/kustomize/options/#feature-gates).
 
 ### Service Account reference
 
@@ -514,12 +664,18 @@ metadata:
   namespace: flux-system
 spec:
   # ...omitted for brevity
+  ignoreMissingComponents: false
   components:
   - ../ingress
   - ../tls
 ```
 
 **Note:** The components paths must be local and relative to the path specified by `.spec.path`.
+
+With `.spec.ignoreMissingComponents` you can specify whether the controller
+should ignore the component paths that are missing from the source. By default,
+it is set to `false`, meaning that the controller will fail the reconciliation
+if any of the specified paths are missing from the source.
 
 **Warning:** Components are an alpha feature in Kustomize and are therefore
 considered experimental in Flux. No guarantees are provided as the feature may
@@ -535,6 +691,10 @@ With `.spec.postBuild.substituteFrom` you can provide a list of ConfigMaps and
 Secrets from which the variables are loaded. The ConfigMap and Secret data keys
 are used as the variable names.
 
+To make a Kustomization react immediately to changes in the referenced Secret
+or ConfigMap see [this](#reacting-immediately-to-configuration-dependencies)
+section.
+
 The `.spec.postBuild.substituteFrom.optional` field indicates how the
 controller should handle a referenced ConfigMap or Secret being absent
 at reconciliation time. The controller's default behavior ― with
@@ -546,7 +706,7 @@ absence as if the object had been present but empty, defining no
 variables.
 
 This offers basic templating for your manifests including support
-for [bash string replacement functions](https://github.com/drone/envsubst) e.g.:
+for [bash string replacement functions](https://github.com/fluxcd/pkg/blob/main/envsubst/README.md) e.g.:
 
 - `${var:=default}`
 - `${var:position}`
@@ -595,7 +755,7 @@ spec:
         # Fail if this Secret does not exist.
 ```
 
-**Note:** For substituting variables in a secret, `.spec.stringData` field must be used i.e:
+For substituting variables in a secret, `.spec.stringData` field must be used i.e:
 
 ```yaml
 ---
@@ -611,6 +771,9 @@ stringData:
 
 The var values which are specified in-line with `substitute`
 take precedence over the ones derived from `substituteFrom`.
+When var values for the same variable keys are derived from multiple
+`ConfigMaps` or `Secrets` referenced in the `substituteFrom` list,
+the later values overwrite earlier values.
 
 **Note:** If you want to avoid var substitutions in scripts embedded in
 ConfigMaps or container commands, you must use the format `$var` instead of
@@ -684,14 +847,44 @@ with:
 kustomize.toolkit.fluxcd.io/force: enabled
 ```
 
-### KubeConfig reference
+### KubeConfig (Remote clusters)
+
+With the `.spec.kubeConfig` field a Kustomization
+can apply and manage resources on a remote cluster.
+
+Two authentication alternatives are available:
+
+- `.spec.kubeConfig.secretRef`: Secret-based authentication using a
+  static kubeconfig stored in a Kubernetes Secret in the same namespace
+  as the Kustomization.
+- `.spec.kubeConfig.configMapRef` (Recommended): Secret-less authentication
+  building a kubeconfig dynamically with parameters stored in a Kubernetes
+  ConfigMap in the same namespace as the Kustomization via workload identity.
+
+To make a Kustomization react immediately to changes in the referenced Secret
+or ConfigMap see [this](#reacting-immediately-to-configuration-dependencies)
+section.
+
+When both `.spec.kubeConfig` and
+[`.spec.serviceAccountName`](#service-account-reference) are specified,
+the controller will impersonate the ServiceAccount on the target cluster,
+i.e. a ServiceAccount with name `.spec.serviceAccountName` must exist in
+the target cluster inside a namespace with the same name as the namespace
+of the Kustomization. For example, if the Kustomization is in the namespace
+`apps` of the cluster where Flux is running, then the ServiceAccount
+must be in the `apps` namespace of the target remote cluster, and have the
+name `.spec.serviceAccountName`. In other words, the namespace of the
+Kustomization must exist both in the cluster where Flux is running
+and in the target remote cluster where Flux will apply resources.
+
+#### Secret-based authentication
 
 `.spec.kubeConfig.secretRef.Name` is an optional field to specify the name of
 the secret containing a KubeConfig. If specified, objects will be applied,
 health-checked, pruned, and deleted for the default cluster specified in that
 KubeConfig instead of using the in-cluster ServiceAccount.
 
-The secret defined in the `kubeConfig.SecretRef` must exist in the same
+The secret defined in the `.spec.kubeConfig.secretRef` must exist in the same
 namespace as the Kustomization. On every reconciliation, the KubeConfig bytes
 will be loaded from the `.secretRef.key` key (default: `value` or `value.yaml`)
 of the Secret’s data , and the Secret can thus be regularly updated if
@@ -715,40 +908,134 @@ stringData:
 environment, or credential files from the kustomize-controller Pod.
 This matches the constraints of KubeConfigs from current Cluster API providers.
 KubeConfigs with `cmd-path` in them likely won't work without a custom,
-per-provider installation of kustomize-controller.
+per-provider installation of kustomize-controller. For more information, see
+[remote clusters/Cluster-API](#remote-cluster-api-clusters).
 
-When both `.spec.kubeConfig` and `.spec.ServiceAccountName` are specified,
-the controller will impersonate the service account on the target cluster.
+#### Secret-less authentication
 
-For more information, see [remote clusters/Cluster-API](#remote-clusterscluster-api).
+The field `.spec.kubeConfig.configMapRef.name` can be used to specify the
+name of a ConfigMap in the same namespace as the Kustomization containing
+parameters for secret-less authentication via workload identity. The
+supported keys inside the `.data` field of the ConfigMap are:
+
+- `.data.provider`: The provider to use. One of `aws`, `azure`, `gcp`,
+  or `generic`. Required. The `aws` provider is used for connecting to
+  remote EKS clusters, `azure` for AKS, `gcp` for GKE, and `generic`
+  for Kubernetes OIDC authentication between clusters. For the
+  `generic` provider, the remote cluster must be configured to trust
+  the OIDC issuer of the cluster where Flux is running.
+- `.data.cluster`: The fully qualified resource name of the Kubernetes
+  cluster in the cloud provider API. Not used by the `generic`
+  provider. Required when one of `.data.address` or `.data["ca.crt"]` is
+  not set, or if the provider is `aws` (required for defining a region).
+- `.data.address`: The address of the Kubernetes API server. Required
+  for `generic`. For the other providers, if not specified, the
+  first address in the cluster resource will be used, and if
+  specified, it must match one of the addresses in the cluster
+  resource.
+  If `audiences` is not set, will be used as the audience for the
+  `generic` provider.
+- `.data["ca.crt"]`: The optional PEM-encoded CA certificate for the
+  Kubernetes API server. If not set, the controller will use the
+  CA certificate from the cluster resource.
+- `.data.audiences`: The optional audiences as a list of
+  line-break-separated strings for the Kubernetes ServiceAccount token.
+  Defaults to the address for the `generic` provider, or to specific
+  values for the other providers depending on the provider.
+- `.data.serviceAccountName`: The optional name of the Kubernetes
+  ServiceAccount in the same namespace that should be used
+  for authentication. If not specified, the controller
+  ServiceAccount will be used. Not confuse with the ServiceAccount
+  used for impersonation, which is specified with
+  [`.spec.serviceAccountName`](#service-account-reference) directly
+  in the Kustomization spec and must exist in the target remote cluster.
+
+The `.data.cluster` field, when specified, must have the following formats:
+
+- `aws`: `arn:<partition>:eks:<region>:<account-id>:cluster/<cluster-name>`
+- `azure`: `/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.ContainerService/managedClusters/<cluster-name>`
+- `gcp`: `projects/<project-id>/locations/<location>/clusters/<cluster-name>`
+
+For complete guides on workload identity and setting up permissions for
+this feature, see the following docs:
+
+- [EKS](/flux/integrations/aws/#for-amazon-elastic-kubernetes-service)
+- [AKS](/flux/integrations/azure/#for-azure-kubernetes-service)
+- [GKE](/flux/integrations/gcp/#for-google-kubernetes-engine)
+- [Generic](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#configuring-the-api-server)
+
+Example for an EKS cluster:
+
+```yaml
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: backend
+  namespace: apps
+spec:
+  ... # other fields omitted for brevity
+  kubeConfig:
+    configMapRef:
+      name: kubeconfig
+  serviceAccountName: apps-sa # optional. must exist in the target cluster. user for impersonation
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubeconfig
+  namespace: apps
+data:
+  provider: aws
+  cluster: arn:aws:eks:eu-central-1:123456789012:cluster/my-cluster
+  serviceAccountName: apps-iam-role # optional. maps to an AWS IAM Role. used for authentication
+```
 
 ### Decryption
 
-`.spec.decryption` is an optional field to specify the configuration to decrypt
-Secrets that are a part of the Kustomization.
+Storing Secrets in Git repositories in plain text or base64 is unsafe,
+regardless of the visibility or access restrictions of the repository.
 
-Since Secrets are either plain text or `base64` encoded, it's unsafe to store
-them in plain text in a public or private Git repository. In order to store
-them safely, you can use [Mozilla SOPS](https://github.com/mozilla/sops) and
-encrypt your Kubernetes Secret data with [age](https://age-encryption.org/v1/)
-and/or [OpenPGP](https://www.openpgp.org) keys, or with provider implementations
-like Azure Key Vault, GCP KMS or Hashicorp Vault.
+In order to store Secrets safely in Git repositorioes you can use an
+encryption provider and the optional field `.spec.decryption` to
+configure decryption for Secrets that are a part of the Kustomization.
 
-**Note:** You should encrypt only the `data/stringData` section of the Kubernetes
-Secret, encrypting the `metadata`, `kind` or `apiVersion` fields is not supported.
-An easy way to do this is by appending `--encrypted-regex '^(data|stringData)$'`
-to your `sops --encrypt` command.
+The only supported encryption provider is [SOPS](https://getsops.io/).
+With SOPS you can encrypt your secrets with [age](https://github.com/FiloSottile/age)
+or [OpenPGP](https://www.openpgp.org) keys, or with keys from Key Management Services
+(KMS), like AWS KMS, Azure Key Vault, GCP KMS or Hashicorp Vault.
 
-It has two fields:
+**Note:** You must leave `metadata`, `kind` or `apiVersion` in plain text.
+An easy way to do this is limiting the encrypted keys with the flag
+`--encrypted-regex '^(data|stringData)$'` in your `sops encrypt` command.
+
+The `.spec.decryption` field has the following subfields:
 
 - `.provider`: The secrets decryption provider to be used. This field is required and
   the only supported value is `sops`.
-- `.secretRef.name`: The name of the secret that contains the keys to be used for
-  decryption. This field can be omitted when using the
-  [global decryption](#controller-global-decryption) option.
+- `.secretRef.name`: The name of the secret that contains the keys or cloud provider
+  static credentials for KMS services to be used for decryption.
+- `.serviceAccountName`: The name of the service account used for
+  secret-less authentication with KMS services from cloud providers.
+
+To make a Kustomization react immediately to changes in the referenced Secret
+see [this](#reacting-immediately-to-configuration-dependencies) section.
+
+For a complete guide on how to set up authentication for KMS services from
+cloud providers, see the integration [docs](/flux/integrations/).
+
+If a static credential for a given cloud provider is defined inside the secret
+referenced by `.secretRef`, that static credential takes priority over secret-less
+authentication for that provider. If no static credentials are defined for a given
+cloud provider inside the secret, secret-less authentication is attempted for that
+provider.
+
+If `.serviceAccountName` is specified for secret-less authentication,
+it takes priority over [controller global decryption](#controller-global-decryption)
+for all cloud providers.
+
+Example:
 
 ```yaml
----
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -762,12 +1049,10 @@ spec:
     name: repository-with-secrets
   decryption:
     provider: sops
+    serviceAccountName: sops-identity
     secretRef:
-      name: sops-keys
+      name: sops-keys-and-credentials
 ```
-
-**Note:** For information on Secrets decryption at a controller level, please
-refer to [controller global decryption](#controller-global-decryption).
 
 The Secret's `.data` section is expected to contain entries with decryption
 keys (for age and OpenPGP), or credentials (for any of the supported provider
@@ -779,7 +1064,7 @@ of the key (e.g. `.agekey`), or a fixed key (e.g. `sops.vault-token`).
 apiVersion: v1
 kind: Secret
 metadata:
-  name: sops-keys
+  name: sops-keys-and-credentials
   namespace: default
 data:
   # Exemplary age private key
@@ -836,9 +1121,9 @@ metadata:
   namespace: default
 data:
   sops.aws-kms: |
-        aws_access_key_id: some-access-key-id
-        aws_secret_access_key: some-aws-secret-access-key
-        aws_session_token: some-aws-session-token # this field is optional
+    aws_access_key_id: some-access-key-id
+    aws_secret_access_key: some-aws-secret-access-key
+    aws_session_token: some-aws-session-token # this field is optional
 ```
 
 #### Azure Key Vault Secret entry
@@ -1135,7 +1420,7 @@ This policy can be used for Kubernetes Jobs to rerun them when their container i
 #### `kustomize.toolkit.fluxcd.io/prune`
 
 When set to `Disabled`, this policy instructs the controller to skip the deletion of
-the Kubernetes resources subject to [garbage collection](#prune). 
+the Kubernetes resources subject to [garbage collection](#prune).
 
 This policy can be used to protect sensitive resources such as Namespaces, PVCs and PVs
 from accidental deletion.
@@ -1232,9 +1517,9 @@ When the flag is set, all Kustomizations which don't have [`.spec.serviceAccount
 specified will use the service account name provided by
 `--default-service-account=<SA Name>` in the namespace of the object.
 
-### Remote clusters/Cluster-API
+### Remote Cluster API clusters
 
-With the [`.spec.kubeConfig` field](#kubeconfig-reference) a Kustomization can be fully
+Using a [`.spec.kubeConfig` reference](#kubeconfig-remote-clusters) a Kustomization can be fully
 reconciled on a remote cluster. This composes well with Cluster API bootstrap
 providers such as CAPBK (kubeadm), CAPA (AWS) and others.
 
@@ -1307,155 +1592,26 @@ it is possible to specify global decryption settings on the
 kustomize-controller Pod. When the controller fails to find credentials on the
 Kustomization object itself, it will fall back to these defaults.
 
-#### AWS KMS
+See also the [workload identity](/flux/installation/configuration/workload-identity/) docs.
 
-While making use of the [IAM OIDC provider](https://eksctl.io/usage/iamserviceaccounts/)
-on your EKS cluster, you can create an IAM Role and Service Account with access
-to AWS KMS (using at least `kms:Decrypt` and `kms:DescribeKey`). Once these are
-created, you can annotate the kustomize-controller Service Account with the
-Role ARN, granting the controller permission to decrypt the Secrets. Please refer
-to the [SOPS guide](https://fluxcd.io/flux/guides/mozilla-sops/#aws) for detailed steps.
+#### Cloud Provider KMS Services
 
-```sh
-kubectl -n flux-system annotate serviceaccount kustomize-controller \
-  --field-manager=flux-client-side-apply \
-  eks.amazonaws.com/role-arn='arn:aws:iam::<ACCOUNT_ID>:role/<KMS-ROLE-NAME>'
-```
+For cloud provider KMS services, please refer to the specific sections in the integration guides:
 
-Furthermore, you can also use the usual [environment variables used for specifying AWS
-credentials](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html#envvars-list),
-by patching the kustomize-controller Deployment:
+Service-specific configuration:
 
-```yaml
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kustomize-controller
-  namespace: flux-system
-spec:
-  template:
-    spec:
-      containers:
-      - name: manager
-        env:
-        - name: AWS_ACCESS_KEY_ID
-          valueFrom:
-            secretKeyRef:
-              name: aws-creds
-              key: awsAccessKeyID
-        - name: AWS_SECRET_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: aws-creds
-              key: awsSecretAccessKey
-        - name: AWS_SESSION_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: aws-creds
-              key: awsSessionToken
-```
+- [AWS KMS](https://fluxcd.io/flux/integrations/aws/#for-amazon-key-management-service)
+- [Azure Key Vault](https://fluxcd.io/flux/integrations/azure/#for-azure-key-vault)
+- [GCP KMS](https://fluxcd.io/flux/integrations/gcp/#for-google-cloud-key-management-service)
 
-In addition to this, the
-[general SOPS documentation around KMS AWS applies](https://github.com/mozilla/sops#27kms-aws-profiles),
-allowing you to specify e.g. a `SOPS_KMS_ARN` environment variable.
+Controller-level configuration:
 
-**Note:**: If you are mounting a secret containing the AWS credentials as a
-file in the `kustomize-controller` Pod, you need to specify an environment
-variable `$HOME`, since the AWS credentials file is expected to be present at
-`~/.aws`. For example:
+- [AWS](https://fluxcd.io/flux/integrations/aws/#at-the-controller-level)
+- [Azure](https://fluxcd.io/flux/integrations/azure/#at-the-controller-level)
+- [GCP](https://fluxcd.io/flux/integrations/gcp/#at-the-controller-level)
 
-```yaml
-env:
-  - name: HOME
-    value: /home/{$USER}
-```
-
-#### Azure Key Vault
-
-##### Workload Identity
-
-If you have Workload Identity set up on your AKS cluster, you can establish
-a federated identity between the kustomize-controller ServiceAccount and an
-identity that has "Decrypt" role on the Azure Key Vault. Once, this is done
-you can label and annotate the kustomize-controller ServiceAccount and Pod
-with the patch shown below:
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - gotk-components.yaml
-  - gotk-sync.yaml
-patches:
-  - patch: |-
-      apiVersion: v1
-      kind: ServiceAccount
-      metadata:
-        name: kustomize-controller
-        namespace: flux-system
-        annotations:
-          azure.workload.identity/client-id: <AZURE_CLIENT_ID>
-        labels:
-          azure.workload.identity/use: "true"
-  - patch: |-
-      apiVersion: apps/v1
-      kind: Deployment
-      metadata:
-        name: kustomize-controller
-        namespace: flux-system
-        labels:
-          azure.workload.identity/use: "true"
-      spec:
-        template:
-          metadata:
-            labels:
-              azure.workload.identity/use: "true"
-```
-
-##### Kubelet Identity
-
-If the kubelet managed identity has `Decrypt` permissions on Azure Key Vault,
-no additional configuration is required for the kustomize-controller to decrypt
-data.
-
-#### GCP KMS
-
-While making use of Google Cloud Platform, the [`GOOGLE_APPLICATION_CREDENTIALS`
-environment variable](https://cloud.google.com/docs/authentication/production)
-is automatically taken into account.
-[Granting permissions](https://cloud.google.com/kms/docs/reference/permissions-and-roles)
-to the Service Account attached to this will therefore be sufficient to decrypt
-data. When running outside GCP, it is possible to manually patch the
-kustomize-controller Deployment with a valid set of (mounted) credentials.
-
-```yaml
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kustomize-controller
-  namespace: flux-system
-spec:
-  template:
-    spec:
-      containers:
-      - name: manager
-        env:
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: /var/gcp/credentials.json
-        volumeMounts:
-        - name: gcp-credentials
-          mountPath: /var/gcp/
-          readOnly: true
-      volumes:
-      - name: gcp-credentials
-        secret:
-          secretName: mysecret
-          items:
-          - key: credentials
-            path: credentials.json
-```
+These guides provide detailed instructions for setting up authentication,
+permissions, and controller configuration for each cloud provider.
 
 #### Hashicorp Vault
 
@@ -1478,6 +1634,48 @@ spec:
         - name: VAULT_TOKEN
           value: <token>
 ```
+
+#### SOPS Age Keys
+
+To configure global decryption for SOPS Age keys, use the `--sops-age-secret`
+controller flag to specify a Kubernetes Secret containing the Age private keys.
+
+First, create a Secret containing the Age private keys with the `.agekey` suffix:
+
+```yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sops-age-keys
+  namespace: flux-system
+stringData:
+  identity1.agekey: <identity1 key>
+  identity2.agekey: <identity1 key>
+```
+
+The Secret must be in the same namespace as the kustomize-controller Deployment.
+
+Then, patch the kustomize-controller Deployment to add the `--sops-age-secret` flag:
+
+```yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kustomize-controller
+  namespace: flux-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        args:
+        - --sops-age-secret=sops-age-keys
+```
+
+The field `.spec.decryption.secretRef` in the Kustomization will take precedence
+in case both the controller flag and the Kustomization field are set.
 
 ### Kustomize secretGenerator
 
@@ -1774,6 +1972,29 @@ the controller. The Flux CLI offer commands for filtering the logs for a
 specific Kustomization, e.g.
 `flux logs --level=error --kind=Kustomization --name=<kustomization-name>`.
 
+### Reacting immediately to configuration dependencies
+
+To trigger a reconciliation when changes occur in referenced
+Secrets or ConfigMaps, you can set the following label on the
+Secret or ConfigMap:
+
+```yaml
+metadata:
+  labels:
+    reconcile.fluxcd.io/watch: Enabled
+```
+
+An alternative to labeling every Secret or ConfigMap is
+setting the `--watch-configs-label-selector=owner!=helm`
+[flag](https://fluxcd.io/flux/components/kustomize/options/#flags)
+in kustomize-controller, which allows watching all Secrets and
+ConfigMaps except for Helm storage Secrets.
+
+**Note**: A reconciliation will be triggered for an event on a
+referenced Secret/ConfigMap even if it's marked as optional in
+the `.spec.postBuild.substituteFrom` field, including deletion
+events.
+
 ## Kustomization Status
 
 ### Conditions
@@ -1851,6 +2072,37 @@ configuration issue in the Kustomization spec. When a reconciliation fails, the
 `Reconciling` Condition `reason` would be `ProgressingWithRetry`. When the
 reconciliation is performed again after the failure, the `reason` is updated to `Progressing`.
 
+### History
+
+The kustomize-controller maintains a history of the last 5 reconciliations
+in `.status.history`, including the digest of the applied manifests, the
+source and origin revision, the timestamps and the duration of the reconciliations,
+the status and the total number of times a specific digest was reconciled.
+
+```yaml
+status:
+  history:
+    - digest: sha256:43ad78c94b2655429d84f21488f29d7cca9cd45b7f54d2b27e16bbec8eff9228
+      firstReconciled: "2025-08-15T10:11:00Z"
+      lastReconciled: "2025-08-15T11:12:00Z"
+      lastReconciledDuration: 2.818583s
+      lastReconciledStatus: ReconciliationSucceeded
+      totalReconciliations: 2
+      metadata:
+        revision: "v1.0.1@sha1:450796ddb2ab6724ee1cc32a4be56da032d1cca0"
+    - digest: sha256:ec8dbfe61777b65001190260cf873ffe454451bd2e464bd6f9a154cffcdcd7e5
+      firstReconciled: "2025-07-14T13:10:00Z"
+      lastReconciled: "2025-08-15T10:00:00Z"
+      lastReconciledDuration: 49.813292s
+      lastReconciledStatus: HealthCheckFailed
+      totalReconciliations: 120
+      metadata:
+        revision: "v1.0.0@sha1:67e2c98a60dc92283531412a9e604dd4bae005a9"
+```
+
+The kustomize-controller deduplicates entries based on the digest and status, with the
+most recent reconciliation being the first entry in the list.
+
 ### Inventory
 
 In order to perform operations such as drift detection, garbage collection, etc.
@@ -1876,6 +2128,21 @@ Status:
 
 `.status.lastAppliedRevision` is the last revision of the Artifact from the
 referred Source object that was successfully applied to the cluster.
+
+### Last applied origin revision
+
+`status.lastAppliedOriginRevision` is the last origin revision of the Artifact
+from the referred Source object that was successfully applied to the cluster.
+
+This field is usually retrieved from the Metadata of the Artifact and depends
+on the Source type. For example, for OCI artifacts this is the value associated
+with the standard metadata key `org.opencontainers.image.revision`, which is
+used to track the revision of the source code that was used to build the OCI
+artifact.
+
+The controller will forward this value when emitting events in the metadata
+key `originRevision`. The notification-controller will look for this key in
+the event metadata when sending *commit status update* events to Git providers.
 
 ### Last attempted revision
 
