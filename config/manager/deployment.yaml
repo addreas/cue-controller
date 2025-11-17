@@ -47,7 +47,7 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: metadata.namespace
-          - name: CUE_MODULE_CACHE
+          - name: CUE_CACHE_DIR
             value: /tmp/cache
         args:
           - --watch-all-namespaces
