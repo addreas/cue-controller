@@ -832,7 +832,11 @@ func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev
 				}
 			}
 		} else {
-			log.V(1).Info("searching for apiVersion, kind, and metadata.name fields in value", "err", value.Err())
+			err := value.Err()
+			log.V(1).Info("searching for apiVersion, kind, and metadata.name fields in value", "err", err)
+			if err != nil {
+				errors = append(errors, err)
+			}
 			value.Walk(func(v cue.Value) bool {
 				if v.Kind() == cue.StructKind &&
 					v.LookupPath(apiVersionPath).Exists() &&
