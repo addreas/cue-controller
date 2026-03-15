@@ -2,6 +2,120 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.8.2
+
+**Release date:** 2026-03-12
+
+This patch release fixes reconciliation queue behavior for source watch events
+while a Kustomization is already reconciling the watched revision.
+
+Fixes:
+- Fix enqueing the same revision while reconciling
+  [#1614](https://github.com/fluxcd/kustomize-controller/pull/1614)
+
+Improvements:
+- Fix docs typo
+  [#1609](https://github.com/fluxcd/kustomize-controller/pull/1609)
+- Update fluxcd/pkg dependencies
+  [#1616](https://github.com/fluxcd/kustomize-controller/pull/1616)
+
+## 1.8.1
+
+**Release date:** 2026-02-27
+
+This patch release fixes health check logic for StatefulSets during
+rolling updates when the Pods are Pending/Unschedulable.
+
+Fixes:
+- Fix health check logic for StatefulSets during rolling updates
+  [#1602](https://github.com/fluxcd/kustomize-controller/pull/1602)
+
+Improvements:
+- Improve docs for `.spec.force`
+  [#1597](https://github.com/fluxcd/kustomize-controller/pull/1597)
+- Remove no longer needed workaround for Flux 2.8
+  [#1595](https://github.com/fluxcd/kustomize-controller/pull/1595)
+
+## 1.8.0
+
+**Release date:** 2026-02-17
+
+This minor release comes with various bug fixes and improvements.
+
+⚠️ The `v1beta2` APIs were removed. Before upgrading the CRDs, Flux users
+must run [`flux migrate`](https://github.com/fluxcd/flux2/pull/5473) to
+migrate the cluster storage off `v1beta2`.
+
+### Kustomization
+
+The controller now cancels in-progress health checks when a new reconciliation
+request is received, reducing the mean time to recovery (MTTR) in case of
+failed deployments. This is available through the `CancelHealthCheckOnNewRevision`
+feature gate, that previously worked only for new source revisions but now also
+works for any watch events that trigger a new reconciliation.
+
+A custom SSA stage has been introduced, allowing Role and RoleBinding objects
+to be applied in the same call even when the impersonated ServiceAccount does
+not have a ClusterRoleBinding for `cluster-admin`. This can be specified with
+the flag `--custom-apply-stage-kinds=rbac.authorization.k8s.io/Role`.
+
+Health checks now handle Jobs with TTL set to zero seconds that are deleted
+before or during health checking.
+
+A `DirectSourceFetch` feature gate has been added to bypass cache for source
+objects, enabling immediate consistency for source object reads.
+
+### General updates
+
+In addition, the Kubernetes dependencies have been updated to v1.35.0,
+Kustomize has been updated to v5.8.1 and the controller is now built
+with Go 1.26.
+
+Fixes:
+- Fix decryptor copy of auth.Option slices (avoid overrides)
+  [#1570](https://github.com/fluxcd/kustomize-controller/pull/1570)
+
+Improvements:
+- Reduce the mean time to recovery (MTTR) in case of failed deployments
+  [#1536](https://github.com/fluxcd/kustomize-controller/pull/1536)
+- Introduce custom SSA stage
+  [#1571](https://github.com/fluxcd/kustomize-controller/pull/1571)
+- Handle Jobs with TTL in health checks
+  [#1578](https://github.com/fluxcd/kustomize-controller/pull/1578)
+- Add `DirectSourceFetch` feature gate to bypass cache for source objects
+  [#1586](https://github.com/fluxcd/kustomize-controller/pull/1586)
+- Remove deprecated APIs in group `kustomize.toolkit.fluxcd.io/v1beta2`
+  [#1584](https://github.com/fluxcd/kustomize-controller/pull/1584)
+- Various dependency updates
+  [#1566](https://github.com/fluxcd/kustomize-controller/pull/1566)
+  [#1572](https://github.com/fluxcd/kustomize-controller/pull/1572)
+  [#1575](https://github.com/fluxcd/kustomize-controller/pull/1575)
+  [#1581](https://github.com/fluxcd/kustomize-controller/pull/1581)
+  [#1585](https://github.com/fluxcd/kustomize-controller/pull/1585)
+  [#1588](https://github.com/fluxcd/kustomize-controller/pull/1588)
+  [#1589](https://github.com/fluxcd/kustomize-controller/pull/1589)
+
+## 1.7.3
+
+**Release date:** 2025-11-19
+
+This patch release comes with a series of bug fixes, including
+Azure Workload Identity in Azure China Cloud. It also adds a
+feature gate to disable the ConfigMap and Secret watchers,
+`DisableConfigWatchers`.
+
+Fixes:
+- Fix: skip trying to decrypt remote patches as local
+  [#1548](https://github.com/fluxcd/kustomize-controller/pull/1548)
+- Add GVK to error message
+  [#1547](https://github.com/fluxcd/kustomize-controller/pull/1547)
+
+Improvements:
+- Add feature gate for disabling config watchers
+  [#1553](https://github.com/fluxcd/kustomize-controller/pull/1553)
+- Upgrade k8s to 1.34.2 and c-r to 0.22.4
+  [#1551](https://github.com/fluxcd/kustomize-controller/pull/1551)
+
 ## 1.7.2
 
 **Release date:** 2025-10-28
@@ -62,7 +176,7 @@ The new `.spec.ignoreMissingComponents` field allows Kustomizations to continue
 reconciliation even when referenced components are missing, providing more resilient
 deployments.
 
-A feature gate `CancelHealthChecksOnNewRevision` has been added to cancel ongoing
+A feature gate `CancelHealthCheckOnNewRevision` has been added to cancel ongoing
 health checks when a new revision is detected.
 
 In addition, the Kubernetes dependencies have been updated to v1.34,

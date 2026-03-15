@@ -27,6 +27,7 @@ import (
 
 	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
 	"github.com/fluxcd/pkg/apis/meta"
+	"github.com/fluxcd/pkg/runtime/conditions"
 	"github.com/fluxcd/pkg/runtime/dependency"
 )
 
@@ -50,10 +51,11 @@ func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) handler.Map
 			return nil
 		}
 		var dd []dependency.Dependent
-		for _, d := range list.Items {
-			// If the revision of the artifact equals to the last attempted revision,
-			// we should not make a request for this Kustomization
-			if repo.GetArtifact().HasRevision(d.Status.LastAttemptedRevision) {
+		for i, d := range list.Items {
+			// If the Kustomization is ready or reconciling and the revision of the artifact equals
+			// to the last attempted revision, we should not make a request for this Kustomization
+			if (conditions.IsReady(&list.Items[i]) || conditions.IsReconciling(&list.Items[i])) &&
+				repo.GetArtifact().HasRevision(d.Status.LastAttemptedRevision) {
 				continue
 			}
 			dd = append(dd, d.DeepCopy())

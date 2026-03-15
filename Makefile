@@ -135,8 +135,8 @@ manifests: controller-gen
 
 # Run go mod tidy
 tidy:
-	cd api; rm -f go.sum; go mod tidy -compat=1.25
-	rm -f go.sum; go mod tidy -compat=1.25
+	cd api; rm -f go.sum; go mod tidy -compat=1.26
+	rm -f go.sum; go mod tidy -compat=1.26
 
 # Run go fmt against code
 fmt:

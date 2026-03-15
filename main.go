@@ -50,6 +50,7 @@ import (
 	"github.com/fluxcd/pkg/runtime/metrics"
 	"github.com/fluxcd/pkg/runtime/pprof"
 	"github.com/fluxcd/pkg/runtime/probes"
+	ssautils "github.com/fluxcd/pkg/ssa/utils"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
 	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
@@ -102,6 +103,7 @@ func main() {
 		featureGates                    feathelper.FeatureGates
 		disallowedFieldManagers         []string
 		tokenCacheOptions               pkgcache.TokenFlags
+		customApplyStageKinds           string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
@@ -118,6 +120,8 @@ func main() {
 	flag.StringVar(&defaultKubeConfigServiceAccount, auth.ControllerFlagDefaultKubeConfigServiceAccount, "", "Default service account used for kubeconfig.")
 	flag.StringVar(&sopsAgeSecret, "sops-age-secret", "", "The name of a Kubernetes secret in the RUNTIME_NAMESPACE containing a SOPS age decryption key for fallback usage.")
 	flag.StringArrayVar(&disallowedFieldManagers, "override-manager", []string{}, "Field manager disallowed to perform changes on managed resources.")
+	flag.StringVar(&customApplyStageKinds, "custom-apply-stage-kinds", "", "A comma-separated list of GroupKind (e.g., 'rbac.authorization.k8s.io/Role,some.group.io/SomeResource') "+
+		"resources to be applied in a custom stage during server-side apply running after CRDs and before all namespaced resources not in this list.")
 
 	clientOptions.BindFlags(flag.CommandLine)
 	logOptions.BindFlags(flag.CommandLine)
@@ -186,9 +190,9 @@ func main() {
 	}
 
 	var disableCacheFor []ctrlclient.Object
-	shouldCache, err := features.Enabled(features.CacheSecretsAndConfigMaps)
+	shouldCache, err := features.Enabled(runtimeCtrl.FeatureGateCacheSecretsAndConfigMaps)
 	if err != nil {
-		setupLog.Error(err, "unable to check feature gate "+features.CacheSecretsAndConfigMaps)
+		setupLog.Error(err, "unable to check feature gate "+runtimeCtrl.FeatureGateCacheSecretsAndConfigMaps)
 		os.Exit(1)
 	}
 	if !shouldCache {
@@ -281,15 +285,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	additiveCELDependencyCheck, err := features.Enabled(features.AdditiveCELDependencyCheck)
+	additiveCELDependencyCheck, err := features.Enabled(runtimeCtrl.FeatureGateAdditiveCELDependencyCheck)
 	if err != nil {
-		setupLog.Error(err, "unable to check feature gate "+features.AdditiveCELDependencyCheck)
+		setupLog.Error(err, "unable to check feature gate "+runtimeCtrl.FeatureGateAdditiveCELDependencyCheck)
 		os.Exit(1)
 	}
 
-	allowExternalArtifact, err := features.Enabled(features.ExternalArtifact)
+	allowExternalArtifact, err := features.Enabled(runtimeCtrl.FeatureGateExternalArtifact)
 	if err != nil {
-		setupLog.Error(err, "unable to check feature gate "+features.ExternalArtifact)
+		setupLog.Error(err, "unable to check feature gate "+runtimeCtrl.FeatureGateExternalArtifact)
 		os.Exit(1)
 	}
 
@@ -312,35 +316,60 @@ func main() {
 		}
 	}
 
+	disableConfigWatchers, err := features.Enabled(runtimeCtrl.FeatureGateDisableConfigWatchers)
+	if err != nil {
+		setupLog.Error(err, "unable to check feature gate "+runtimeCtrl.FeatureGateDisableConfigWatchers)
+		os.Exit(1)
+	}
+	watchConfigs := !disableConfigWatchers
+
+	directSourceFetch, err := features.Enabled(runtimeCtrl.FeatureGateDirectSourceFetch)
+	if err != nil {
+		setupLog.Error(err, "unable to check feature gate "+runtimeCtrl.FeatureGateDirectSourceFetch)
+		os.Exit(1)
+	}
+	if directSourceFetch {
+		setupLog.Info("DirectSourceFetch feature gate is enabled, sources will be fetched directly from the API server bypassing the cache")
+	}
+
+	customStageKinds, err := ssautils.ParseGroupKindSet(customApplyStageKinds)
+	if err != nil {
+		setupLog.Error(err, "unable to parse --custom-apply-stage-kinds")
+		os.Exit(1)
+	}
+
 	if err = (&controller.CueReconciler{
-		AdditiveCELDependencyCheck:     additiveCELDependencyCheck,
-		AllowExternalArtifact:          allowExternalArtifact,
-		CancelHealthCheckOnNewRevision: cancelHealthCheckOnNewRevision,
-		APIReader:                      mgr.GetAPIReader(),
-		ArtifactFetchRetries:           httpRetry,
-		Client:                         mgr.GetClient(),
-		ClusterReader:                  clusterReader,
-		ConcurrentSSA:                  concurrentSSA,
-		ControllerName:                 controllerName,
-		DefaultServiceAccount:          defaultServiceAccount,
-		DependencyRequeueInterval:      requeueDependency,
-		DisallowedFieldManagers:        disallowedFieldManagers,
-		EventRecorder:                  eventRecorder,
-		FailFast:                       failFast,
-		GroupChangeLog:                 groupChangeLog,
-		KubeConfigOpts:                 kubeConfigOpts,
-		Mapper:                         restMapper,
-		Metrics:                        metricsH,
-		NoCrossNamespaceRefs:           aclOptions.NoCrossNamespaceRefs,
-		NoRemoteBases:                  noRemoteBases,
-		SOPSAgeSecret:                  sopsAgeSecret,
-		StatusManager:                  fmt.Sprintf("gotk-%s", controllerName),
-		StrictSubstitutions:            strictSubstitutions,
-		TokenCache:                     tokenCache,
+		AdditiveCELDependencyCheck: additiveCELDependencyCheck,
+		AllowExternalArtifact:      allowExternalArtifact,
+		APIReader:                  mgr.GetAPIReader(),
+		ArtifactFetchRetries:       httpRetry,
+		Client:                     mgr.GetClient(),
+		ClusterReader:              clusterReader,
+		ConcurrentSSA:              concurrentSSA,
+		ControllerName:             controllerName,
+		DefaultServiceAccount:      defaultServiceAccount,
+		DependencyRequeueInterval:  requeueDependency,
+		DirectSourceFetch:          directSourceFetch,
+		DisallowedFieldManagers:    disallowedFieldManagers,
+		EventRecorder:              eventRecorder,
+		FailFast:                   failFast,
+		GroupChangeLog:             groupChangeLog,
+		KubeConfigOpts:             kubeConfigOpts,
+		Mapper:                     restMapper,
+		Metrics:                    metricsH,
+		NoCrossNamespaceRefs:       aclOptions.NoCrossNamespaceRefs,
+		NoRemoteBases:              noRemoteBases,
+		SOPSAgeSecret:              sopsAgeSecret,
+		StatusManager:              fmt.Sprintf("gotk-%s", controllerName),
+		StrictSubstitutions:        strictSubstitutions,
+		TokenCache:                 tokenCache,
+		CustomStageKinds:           customStageKinds,
 	}).SetupWithManager(ctx, mgr, controller.CueReconcilerOptions{
-		RateLimiter:            runtimeCtrl.GetRateLimiter(rateLimiterOptions),
-		WatchConfigsPredicate:  watchConfigsPredicate,
-		WatchExternalArtifacts: allowExternalArtifact,
+		RateLimiter:                runtimeCtrl.GetRateLimiter(rateLimiterOptions),
+		WatchConfigs:               watchConfigs,
+		WatchConfigsPredicate:      watchConfigsPredicate,
+		WatchExternalArtifacts:     allowExternalArtifact,
+		CancelHealthCheckOnRequeue: cancelHealthCheckOnNewRevision,
 	}); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", controllerName)
 		os.Exit(1)

@@ -840,12 +840,19 @@ metadata:
 will replace the resources in-cluster if the patching fails due to immutable
 field changes.
 
-It can also be enabled for specific resources by labelling or annotating them
-with:
+Note that this field should be set temporarily (e.g. when changing Deployment
+pod selectors) and not left enabled on the long run, as force-replacing
+resources may cause downtime.
+
+A safer alternative is to enable force-apply for specific resources by
+labelling or annotating them with:
 
 ```yaml
 kustomize.toolkit.fluxcd.io/force: enabled
 ```
+
+This way, only the targeted resources are force-replaced when immutable field
+changes are made. The annotation should be removed after the change is applied.
 
 ### KubeConfig (Remote clusters)
 
@@ -1263,6 +1270,18 @@ data:
   # Exemplary Hashicorp Vault Secret token
   sops.vault-token: <BASE64>
 ```
+
+#### Controlling the decryption behavior of resources
+
+To change the decryption behaviour for specific Kubernetes resources, you can annotate them with:
+
+| Annotation                          | Default    | Values                                                         | Role            |
+|-------------------------------------|------------|----------------------------------------------------------------|-----------------|
+| `kustomize.toolkit.fluxcd.io/decrypt` | `Enabled` | - `Enabled`<br/>- `Disabled`                                   | Decryption policy |
+
+##### Disabled
+
+The `Disabled` policy instructs the controller to not decrypt Kubernetes resources. This might be useful if there is another entity that is going to decrypt the resource later.
 
 ## Working with Kustomizations
 

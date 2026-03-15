@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	runtimeCtrl "github.com/fluxcd/pkg/runtime/controller"
 	"github.com/fluxcd/pkg/runtime/predicates"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
@@ -38,9 +39,11 @@ import (
 
 // CueExportReconcilerOptions contains options for the CueReconciler.
 type CueReconcilerOptions struct {
-	RateLimiter            workqueue.TypedRateLimiter[reconcile.Request]
-	WatchConfigsPredicate  predicate.Predicate
-	WatchExternalArtifacts bool
+	RateLimiter                workqueue.TypedRateLimiter[reconcile.Request]
+	WatchConfigs               bool
+	WatchConfigsPredicate      predicate.Predicate
+	WatchExternalArtifacts     bool
+	CancelHealthCheckOnRequeue bool
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -127,43 +130,68 @@ func (r *CueReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, 
 		return fmt.Errorf("failed creating index %s: %w", indexSecret, err)
 	}
 
-	ctrlBuilder := ctrl.NewControllerManagedBy(mgr).
-		For(&cuev1.CueExport{}, builder.WithPredicates(
-			predicate.Or(predicate.GenerationChangedPredicate{}, predicates.ReconcileRequestedPredicate{}),
-		)).
+	var blder *builder.Builder
+	var toComplete reconcile.TypedReconciler[reconcile.Request]
+	var enqueueRequestsFromMapFunc func(objKind string, fn handler.MapFunc) handler.EventHandler
+
+	ksPredicate := predicate.Or(
+		predicate.GenerationChangedPredicate{},
+		predicates.ReconcileRequestedPredicate{},
+	)
+
+	if !opts.CancelHealthCheckOnRequeue {
+		toComplete = r
+		enqueueRequestsFromMapFunc = func(objKind string, fn handler.MapFunc) handler.EventHandler {
+			return handler.EnqueueRequestsFromMapFunc(fn)
+		}
+		blder = ctrl.NewControllerManagedBy(mgr).
+			For(&cuev1.CueExport{}, builder.WithPredicates(ksPredicate))
+	} else {
+		wr := runtimeCtrl.WrapReconciler(r)
+		toComplete = wr
+		enqueueRequestsFromMapFunc = wr.EnqueueRequestsFromMapFunc
+		blder = runtimeCtrl.NewControllerManagedBy(mgr, wr).
+			For(&cuev1.CueExport{}, ksPredicate).Builder
+	}
+
+	blder.
 		Watches(
 			&sourcev1.OCIRepository{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(indexOCIRepository)),
+			enqueueRequestsFromMapFunc(sourcev1.OCIRepositoryKind, r.requestsForRevisionChangeOf(indexOCIRepository)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
 		Watches(
 			&sourcev1.GitRepository{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(indexGitRepository)),
+			enqueueRequestsFromMapFunc(sourcev1.GitRepositoryKind, r.requestsForRevisionChangeOf(indexGitRepository)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		).
 		Watches(
 			&sourcev1.Bucket{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(indexBucket)),
+			enqueueRequestsFromMapFunc(sourcev1.BucketKind, r.requestsForRevisionChangeOf(indexBucket)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
-		).
-		WatchesMetadata(
-			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForConfigDependency(indexConfigMap)),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}, opts.WatchConfigsPredicate),
-		).
-		WatchesMetadata(
-			&corev1.Secret{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForConfigDependency(indexSecret)),
-			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}, opts.WatchConfigsPredicate),
 		)
 
+	if opts.WatchConfigs {
+		blder = blder.
+			WatchesMetadata(
+				&corev1.ConfigMap{},
+				enqueueRequestsFromMapFunc("ConfigMap", r.requestsForConfigDependency(indexConfigMap)),
+				builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}, opts.WatchConfigsPredicate),
+			).
+			WatchesMetadata(
+				&corev1.Secret{},
+				enqueueRequestsFromMapFunc("Secret", r.requestsForConfigDependency(indexSecret)),
+				builder.WithPredicates(predicate.ResourceVersionChangedPredicate{}, opts.WatchConfigsPredicate),
+			)
+	}
+
 	if opts.WatchExternalArtifacts {
-		ctrlBuilder = ctrlBuilder.Watches(
+		blder = blder.Watches(
 			&sourcev1.ExternalArtifact{},
-			handler.EnqueueRequestsFromMapFunc(r.requestsForRevisionChangeOf(indexExternalArtifact)),
+			enqueueRequestsFromMapFunc(sourcev1.ExternalArtifactKind, r.requestsForRevisionChangeOf(indexExternalArtifact)),
 			builder.WithPredicates(SourceRevisionChangePredicate{}),
 		)
 	}
 
-	return ctrlBuilder.WithOptions(controller.Options{RateLimiter: opts.RateLimiter}).Complete(r)
+	return blder.WithOptions(controller.Options{RateLimiter: opts.RateLimiter}).Complete(toComplete)
 }
