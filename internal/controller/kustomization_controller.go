@@ -71,7 +71,7 @@ import (
 	"github.com/fluxcd/pkg/tar"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
-	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
+	cuev1 "github.com/addreas/cue-controller/api/v1"
 	"github.com/addreas/cue-controller/internal/inventory"
 )
 
@@ -352,13 +352,13 @@ func (r *CueReconciler) reconcile(
 
 	moduleRootPath, err := securejoin.SecureJoin(tmpDir, obj.Spec.Root)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, "%s", err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err.Error())
 		return err
 	}
 
 	if _, err := os.Stat(moduleRootPath); err != nil {
 		err = fmt.Errorf("root path not found: %w", err)
-		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, "%s", err.Error())
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err.Error())
 	}
 
 	// check build path exists

@@ -34,7 +34,7 @@ import (
 	"github.com/fluxcd/pkg/runtime/predicates"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
-	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
+	cuev1 "github.com/addreas/cue-controller/api/v1"
 )
 
 // CueExportReconcilerOptions contains options for the CueReconciler.

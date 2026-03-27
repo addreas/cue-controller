@@ -60,7 +60,7 @@ import (
 	kustypes "sigs.k8s.io/kustomize/api/types"
 	"sigs.k8s.io/yaml"
 
-	kustomizev1 "github.com/addreas/cue-controller/api/v1"
+	cuev1 "github.com/addreas/cue-controller/api/v1"
 	intawskms "github.com/addreas/cue-controller/internal/sops/awskms"
 	intazkv "github.com/addreas/cue-controller/internal/sops/azkv"
 	intkeyservice "github.com/addreas/cue-controller/internal/sops/keyservice"
@@ -128,7 +128,7 @@ type Decryptor struct {
 	client client.Client
 	// kustomization is the v1.Kustomization we are decrypting for.
 	// The v1.Decryption of the object is used to ImportKeys().
-	kustomization *kustomizev1.Kustomization
+	kustomization *cuev1.CueExport
 	// maxFileSize is the max size in bytes a file is allowed to have to be
 	// decrypted. Defaults to maxEncryptedFileSize.
 	maxFileSize int64
@@ -171,7 +171,7 @@ type Decryptor struct {
 
 // New creates a new Decryptor, with a temporary GnuPG
 // home directory to Decryptor.ImportKeys() into.
-func New(client client.Client, kustomization *kustomizev1.Kustomization, opts ...Option) (*Decryptor, func(), error) {
+func New(client client.Client, kustomization *cuev1.CueExport, opts ...Option) (*Decryptor, func(), error) {
 	gnuPGHome, err := pgp.NewGnuPGHome()
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot create decryptor: %w", err)
@@ -192,7 +192,7 @@ func New(client client.Client, kustomization *kustomizev1.Kustomization, opts ..
 // IsDecryptionDisabled checks if the given object has the decrypt: disabled annotation set
 func IsDecryptionDisabled(annotations map[string]string) bool {
 	return annotations != nil &&
-		strings.EqualFold(annotations[fmt.Sprintf("%s/decrypt", kustomizev1.GroupVersion.Group)], kustomizev1.DisabledValue)
+		strings.EqualFold(annotations[fmt.Sprintf("%s/decrypt", cuev1.GroupVersion.Group)], cuev1.DisabledValue)
 }
 
 // IsEncryptedSecret checks if the given object is a Kubernetes Secret encrypted
@@ -337,7 +337,7 @@ func (d *Decryptor) SetAuthOptions(ctx context.Context) {
 		}
 
 		involvedObject := cache.InvolvedObject{
-			Kind:      kustomizev1.KustomizationKind,
+			Kind:      cuev1.CueExportKind,
 			Name:      d.kustomization.GetName(),
 			Namespace: d.kustomization.GetNamespace(),
 		}
@@ -345,7 +345,7 @@ func (d *Decryptor) SetAuthOptions(ctx context.Context) {
 		if d.awsCredentialsProvider == nil {
 			awsOpts := slices.Clone(opts)
 			if d.tokenCache != nil {
-				involvedObject.Operation = kustomizev1.MetricDecryptWithAWS
+				involvedObject.Operation = cuev1.MetricDecryptWithAWS
 				awsOpts = append(awsOpts, auth.WithCache(*d.tokenCache, involvedObject))
 			}
 			d.awsCredentialsProvider = func(region string) awssdk.CredentialsProvider {
@@ -358,7 +358,7 @@ func (d *Decryptor) SetAuthOptions(ctx context.Context) {
 		if d.azureTokenCredential == nil {
 			azureOpts := slices.Clone(opts)
 			if d.tokenCache != nil {
-				involvedObject.Operation = kustomizev1.MetricDecryptWithAzure
+				involvedObject.Operation = cuev1.MetricDecryptWithAzure
 				azureOpts = append(azureOpts, auth.WithCache(*d.tokenCache, involvedObject))
 			}
 			d.azureTokenCredential = azure.NewTokenCredential(ctx, azureOpts...)
@@ -367,7 +367,7 @@ func (d *Decryptor) SetAuthOptions(ctx context.Context) {
 		if d.gcpTokenSource == nil {
 			gcpOpts := slices.Clone(opts)
 			if d.tokenCache != nil {
-				involvedObject.Operation = kustomizev1.MetricDecryptWithGCP
+				involvedObject.Operation = cuev1.MetricDecryptWithGCP
 				gcpOpts = append(gcpOpts, auth.WithCache(*d.tokenCache, involvedObject))
 			}
 			d.gcpTokenSource = gcp.NewTokenSource(ctx, gcpOpts...)
