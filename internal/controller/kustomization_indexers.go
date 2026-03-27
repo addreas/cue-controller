@@ -25,34 +25,29 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/runtime/conditions"
 	"github.com/fluxcd/pkg/runtime/dependency"
-
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
 )
 
-func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) handler.MapFunc {
+func (r *CueReconciler) requestsForRevisionChangeOf(indexKey string) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		log := ctrl.LoggerFrom(ctx)
 		repo, ok := obj.(interface {
 			GetArtifact() *meta.Artifact
 		})
 		if !ok {
-			log.Error(fmt.Errorf("expected an object conformed with GetArtifact() method, but got a %T", obj),
-				"failed to get reconcile requests for revision change")
-			return nil
+			panic(fmt.Sprintf("Expected an object conformed with GetArtifact() method, but got a %T", obj))
 		}
 		// If we do not have an artifact, we have no requests to make
 		if repo.GetArtifact() == nil {
 			return nil
 		}
 
-		var list kustomizev1.KustomizationList
+		var list cuev1.CueExportList
 		if err := r.List(ctx, &list, client.MatchingFields{
 			indexKey: client.ObjectKeyFromObject(obj).String(),
 		}); err != nil {
-			log.Error(err, "failed to list objects for revision change")
 			return nil
 		}
 		var dd []dependency.Dependent
@@ -67,16 +62,15 @@ func (r *KustomizationReconciler) requestsForRevisionChangeOf(indexKey string) h
 		}
 		reqs, err := sortAndEnqueue(dd)
 		if err != nil {
-			log.Error(err, "failed to sort dependencies for revision change")
 			return nil
 		}
 		return reqs
 	}
 }
 
-func (r *KustomizationReconciler) indexBy(kind string) func(o client.Object) []string {
+func (r *CueReconciler) indexBy(kind string) func(o client.Object) []string {
 	return func(o client.Object) []string {
-		k, ok := o.(*kustomizev1.Kustomization)
+		k, ok := o.(*cuev1.CueExport)
 		if !ok {
 			panic(fmt.Sprintf("Expected a Kustomization, got %T", o))
 		}
@@ -95,7 +89,7 @@ func (r *KustomizationReconciler) indexBy(kind string) func(o client.Object) []s
 
 // requestsForConfigDependency enqueues requests for watched ConfigMaps or Secrets
 // according to the specified index.
-func (r *KustomizationReconciler) requestsForConfigDependency(
+func (r *CueReconciler) requestsForConfigDependency(
 	index string) func(ctx context.Context, o client.Object) []reconcile.Request {
 
 	return func(ctx context.Context, o client.Object) []reconcile.Request {
@@ -105,7 +99,7 @@ func (r *KustomizationReconciler) requestsForConfigDependency(
 		})
 
 		// List Kustomizations that have a dependency on the ConfigMap or Secret.
-		var list kustomizev1.KustomizationList
+		var list cuev1.CueExportList
 		if err := r.List(ctx, &list, client.MatchingFields{
 			index: client.ObjectKeyFromObject(o).String(),
 		}); err != nil {

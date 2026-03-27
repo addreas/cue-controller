@@ -33,6 +33,10 @@ const (
 	// kustomize build failed.
 	BuildFailedReason string = "BuildFailed"
 
+	// GateFailedReason represents the fact that the
+	// cue build failed.
+	GateFailedReason string = "GateFailedReason"
+
 	// HealthCheckFailedReason represents the fact that
 	// one of the health checks failed.
 	HealthCheckFailedReason string = "HealthCheckFailed"

@@ -1,7 +1,7 @@
 domain: toolkit.fluxcd.io
-repo: github.com/fluxcd/kustomize-controller
+repo: github.com/addreas/cue-controller
 resources:
-- group: kustomize
-  kind: Kustomization
-  version: v1
+- group: cue
+  kind: CueExport
+  version: v1beta2
 version: "2"

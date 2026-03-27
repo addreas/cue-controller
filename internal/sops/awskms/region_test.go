@@ -21,7 +21,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/fluxcd/kustomize-controller/internal/sops/awskms"
+	"github.com/addreas/cue-controller/internal/sops/awskms"
 )
 
 func TestGetRegionFromKMSARN(t *testing.T) {

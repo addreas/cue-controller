@@ -49,7 +49,7 @@ import (
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/cache"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	kustomizev1 "github.com/addreas/cue-controller/api/v1"
 )
 
 func TestIsEncryptedSecret(t *testing.T) {

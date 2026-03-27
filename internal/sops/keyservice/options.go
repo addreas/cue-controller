@@ -29,7 +29,7 @@ import (
 	"github.com/getsops/sops/v3/pgp"
 	"golang.org/x/oauth2"
 
-	intawskms "github.com/fluxcd/kustomize-controller/internal/sops/awskms"
+	intawskms "github.com/addreas/cue-controller/internal/sops/awskms"
 )
 
 // ServerOption is some configuration that modifies the Server.

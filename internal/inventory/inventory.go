@@ -26,7 +26,7 @@ import (
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/fluxcd/pkg/ssa"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	kustomizev1 "github.com/addreas/cue-controller/api/v1beta2"
 )
 
 func New() *kustomizev1.ResourceInventory {

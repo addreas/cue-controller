@@ -25,6 +25,10 @@ import (
 	"strings"
 	"time"
 
+	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
+	"cuelang.org/go/cue/load"
+	"cuelang.org/go/cue/parser"
 	securejoin "github.com/cyphar/filepath-securejoin"
 	celtypes "github.com/google/cel-go/common/types"
 	"github.com/opencontainers/go-digest"
@@ -53,7 +57,6 @@ import (
 	authutils "github.com/fluxcd/pkg/auth/utils"
 	"github.com/fluxcd/pkg/cache"
 	"github.com/fluxcd/pkg/http/fetch"
-	generator "github.com/fluxcd/pkg/kustomize"
 	"github.com/fluxcd/pkg/runtime/acl"
 	"github.com/fluxcd/pkg/runtime/cel"
 	runtimeClient "github.com/fluxcd/pkg/runtime/client"
@@ -68,22 +71,21 @@ import (
 	"github.com/fluxcd/pkg/tar"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
-	"github.com/fluxcd/kustomize-controller/internal/decryptor"
-	"github.com/fluxcd/kustomize-controller/internal/inventory"
+	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
+	"github.com/addreas/cue-controller/internal/inventory"
 )
 
-// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations/finalizers,verbs=get;create;update;patch;delete
+// +kubebuilder:rbac:groups=cue.toolkit.fluxcd.io,resources=cueexports,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cue.toolkit.fluxcd.io,resources=cueexports/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cue.toolkit.fluxcd.io,resources=cueexports/finalizers,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=buckets;ocirepositories;gitrepositories,verbs=get;list;watch
 // +kubebuilder:rbac:groups=source.toolkit.fluxcd.io,resources=buckets/status;ocirepositories/status;gitrepositories/status,verbs=get
 // +kubebuilder:rbac:groups="",resources=configmaps;secrets;serviceaccounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts/token,verbs=create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
-// KustomizationReconciler reconciles a Kustomization object
-type KustomizationReconciler struct {
+// CueReconciler reconciles a CueExport object
+type CueReconciler struct {
 	client.Client
 	kuberecorder.EventRecorder
 	runtimeCtrl.Metrics
@@ -108,6 +110,7 @@ type KustomizationReconciler struct {
 	SOPSAgeSecret           string
 	TokenCache              *cache.TokenCache
 
+	HTTPRetry int
 	// Retry and requeue options
 
 	ArtifactFetchRetries      int
@@ -123,11 +126,11 @@ type KustomizationReconciler struct {
 	StrictSubstitutions        bool
 }
 
-func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
+func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
 	log := ctrl.LoggerFrom(ctx)
 	reconcileStart := time.Now()
 
-	obj := &kustomizev1.Kustomization{}
+	obj := &cuev1.CueExport{}
 	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -158,7 +161,7 @@ func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			log.Info(msg, "revision", obj.Status.LastAttemptedRevision)
 			r.event(obj, obj.Status.LastAppliedRevision, obj.Status.LastAppliedOriginRevision, eventv1.EventSeverityInfo, msg,
 				map[string]string{
-					kustomizev1.GroupVersion.Group + "/" + eventv1.MetaCommitStatusKey: eventv1.MetaCommitStatusUpdateValue,
+					cuev1.GroupVersion.Group + "/" + eventv1.MetaCommitStatusKey: eventv1.MetaCommitStatusUpdateValue,
 				})
 		}
 	}()
@@ -172,8 +175,8 @@ func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// between init and delete.
 	// Note: Finalizers in general can only be added when the deletionTimestamp
 	// is not set.
-	if !controllerutil.ContainsFinalizer(obj, kustomizev1.KustomizationFinalizer) {
-		controllerutil.AddFinalizer(obj, kustomizev1.KustomizationFinalizer)
+	if !controllerutil.ContainsFinalizer(obj, cuev1.CueExportFinalizer) {
+		controllerutil.AddFinalizer(obj, cuev1.CueExportFinalizer)
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -192,18 +195,6 @@ func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		obj.Status.ObservedGeneration = obj.Generation
 		r.event(obj, "", "", eventv1.EventSeverityError, errMsg, nil)
 		return ctrl.Result{}, reconcile.TerminalError(err)
-	}
-
-	// Check object-level workload identity feature gate and decryption with service account.
-	if d := obj.Spec.Decryption; d != nil && d.ServiceAccountName != "" && !auth.IsObjectLevelWorkloadIdentityEnabled() {
-		const gate = auth.FeatureGateObjectLevelWorkloadIdentity
-		const msgFmt = "to use spec.decryption.serviceAccountName for decryption authentication please enable the %s feature gate in the controller"
-		msg := fmt.Sprintf(msgFmt, gate)
-		conditions.MarkFalse(obj, meta.ReadyCondition, meta.FeatureGateDisabledReason, msgFmt, gate)
-		conditions.MarkStalled(obj, meta.FeatureGateDisabledReason, msgFmt, gate)
-		log.Error(auth.ErrObjectLevelWorkloadIdentityNotEnabled, msg)
-		r.event(obj, "", "", eventv1.EventSeverityError, msg, nil)
-		return ctrl.Result{}, nil
 	}
 
 	// Resolve the source reference and requeue the reconciliation if the source is not found.
@@ -301,9 +292,9 @@ func (r *KustomizationReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: jitter.JitteredIntervalDuration(obj.GetRequeueAfter())}, nil
 }
 
-func (r *KustomizationReconciler) reconcile(
+func (r *CueReconciler) reconcile(
 	ctx context.Context,
-	obj *kustomizev1.Kustomization,
+	obj *cuev1.CueExport,
 	src sourcev1.Source,
 	patcher *patch.SerialPatcher,
 	statusReader func(apimeta.RESTMapper) engine.StatusReader) error {
@@ -327,7 +318,7 @@ func (r *KustomizationReconciler) reconcile(
 	}
 
 	// Create tmp dir.
-	tmpDir, err := MkdirTempAbs("", "kustomization-")
+	tmpDir, err := MkdirTempAbs("", "cue-export-")
 	if err != nil {
 		err = fmt.Errorf("tmp dir error: %w", err)
 		conditions.MarkFalse(obj, meta.ReadyCondition, sourcev1.DirCreationFailedReason, "%s", err)
@@ -359,17 +350,30 @@ func (r *KustomizationReconciler) reconcile(
 		return err
 	}
 
-	// check build path exists
-	dirPath, err := securejoin.SecureJoin(tmpDir, obj.Spec.Path)
+	moduleRootPath, err := securejoin.SecureJoin(tmpDir, obj.Spec.Root)
 	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
+		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, "%s", err.Error())
 		return err
 	}
 
-	if _, err := os.Stat(dirPath); err != nil {
-		err = fmt.Errorf("kustomization path not found: %w", err)
-		conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
-		return err
+	if _, err := os.Stat(moduleRootPath); err != nil {
+		err = fmt.Errorf("root path not found: %w", err)
+		conditions.MarkFalse(obj, meta.ReadyCondition, cuev1.ArtifactFailedReason, "%s", err.Error())
+	}
+
+	// check build path exists
+	for _, p := range obj.Spec.Paths {
+		pp, err := securejoin.SecureJoin(tmpDir, p)
+		if err != nil {
+			conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
+			return err
+		}
+
+		if _, err := os.Stat(pp); err != nil {
+			err = fmt.Errorf("path %s not found: %w", p, err)
+			conditions.MarkFalse(obj, meta.ReadyCondition, meta.ArtifactFailedReason, "%s", err)
+			return err
+		}
 	}
 
 	// Report progress and set last attempted revision in status.
@@ -413,20 +417,26 @@ func (r *KustomizationReconciler) reconcile(
 		return fmt.Errorf("failed to build kube client: %w", err)
 	}
 
-	// Generate kustomization.yaml if needed.
-	k, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
-	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
-		return err
-	}
-	err = r.generate(unstructured.Unstructured{Object: k}, tmpDir, dirPath)
+	values, err := r.values(ctx, moduleRootPath, obj)
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
 		return err
 	}
 
-	// Build the Kustomize overlay and decrypt secrets if needed.
-	resources, err := r.build(ctx, obj, unstructured.Unstructured{Object: k}, tmpDir, dirPath)
+	resources, err := r.build(ctx, values, obj)
+	if err != nil {
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
+		return err
+	}
+
+	err = r.checkGates(ctx, values, obj)
+	if err != nil {
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
+		return err
+	}
+
+	// Convert the build result into Kubernetes unstructured objects.
+	objects, err := ssautil.ReadObjects(bytes.NewReader(resources))
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
 		return err
@@ -439,17 +449,10 @@ func (r *KustomizationReconciler) reconcile(
 		historyMeta["originRevision"] = originRevision
 	}
 
-	// Convert the build result into Kubernetes unstructured objects.
-	objects, err := ssautil.ReadObjects(bytes.NewReader(resources))
-	if err != nil {
-		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
-		return err
-	}
-
 	// Create the server-side apply manager.
 	resourceManager := ssa.NewResourceManager(kubeClient, statusPoller, ssa.Owner{
 		Field: r.ControllerName,
-		Group: kustomizev1.GroupVersion.Group,
+		Group: cuev1.GroupVersion.Group,
 	})
 	resourceManager.SetOwnerLabels(objects, obj.GetName(), obj.GetNamespace())
 	resourceManager.SetConcurrency(r.ConcurrentSSA)
@@ -554,14 +557,14 @@ func (r *KustomizationReconciler) reconcile(
 // - The dependency observed generation must match the current generation.
 // - The dependency Ready condition must be true.
 // - The dependency last applied revision must match the current source artifact revision.
-func (r *KustomizationReconciler) checkDependencies(ctx context.Context,
-	obj *kustomizev1.Kustomization,
+func (r *CueReconciler) checkDependencies(ctx context.Context,
+	obj *cuev1.CueExport,
 	source sourcev1.Source) error {
 
 	// Convert the Kustomization object to Unstructured for CEL evaluation.
 	objMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return fmt.Errorf("failed to convert Kustomization to unstructured: %w", err)
+		return fmt.Errorf("failed to convert CueExport to unstructured: %w", err)
 	}
 
 	for _, depRef := range obj.Spec.DependsOn {
@@ -574,7 +577,7 @@ func (r *KustomizationReconciler) checkDependencies(ctx context.Context,
 			Namespace: depRef.Namespace,
 			Name:      depRef.Name,
 		}
-		var dep kustomizev1.Kustomization
+		var dep cuev1.CueExport
 		err := r.APIReader.Get(ctx, depName, &dep)
 		if err != nil {
 			return fmt.Errorf("dependency '%s' not found: %w", depName, err)
@@ -629,11 +632,11 @@ func (r *KustomizationReconciler) checkDependencies(ctx context.Context,
 }
 
 // evalReadyExpr evaluates the CEL expression for the dependency readiness check.
-func (r *KustomizationReconciler) evalReadyExpr(
+func (r *CueReconciler) evalReadyExpr(
 	ctx context.Context,
 	expr string,
 	selfMap map[string]any,
-	dep *kustomizev1.Kustomization,
+	dep *cuev1.CueExport,
 ) (bool, error) {
 	const (
 		selfName = "self"
@@ -663,8 +666,8 @@ func (r *KustomizationReconciler) evalReadyExpr(
 
 // getSource resolves the source reference and returns the source object containing the artifact.
 // It returns an error if the source is not found or if access is denied.
-func (r *KustomizationReconciler) getSource(ctx context.Context,
-	obj *kustomizev1.Kustomization) (sourcev1.Source, error) {
+func (r *CueReconciler) getSource(ctx context.Context,
+	obj *cuev1.CueExport) (sourcev1.Source, error) {
 	var src sourcev1.Source
 	sourceNamespace := obj.GetNamespace()
 	if obj.Spec.SourceRef.Namespace != "" {
@@ -743,99 +746,218 @@ func (r *KustomizationReconciler) getSource(ctx context.Context,
 	return src, nil
 }
 
-func (r *KustomizationReconciler) generate(obj unstructured.Unstructured,
-	workDir string, dirPath string) error {
-	_, err := generator.NewGenerator(workDir, obj).WriteFile(dirPath)
-	return err
+func (r *CueReconciler) values(ctx context.Context, root string, obj *cuev1.CueExport) ([]cue.Value, error) {
+	cctx := cuecontext.New()
+
+	tags := make([]string, 0, len(obj.Spec.Tags))
+	for _, t := range obj.Spec.Tags {
+		if t.ValueFrom != nil {
+			val, err := r.getValueFromSource(ctx, obj.Namespace, t.ValueFrom)
+			if err != nil {
+				return nil, err
+			}
+			tags = append(tags, fmt.Sprintf("%s=%s", t.Name, val))
+		} else if t.Value != "" {
+			tags = append(tags, fmt.Sprintf("%s=%s", t.Name, t.Value))
+		} else {
+			tags = append(tags, t.Name)
+		}
+	}
+
+	cfg := &load.Config{
+		Dir:        root,
+		ModuleRoot: root,
+		Package:    obj.Spec.Package,
+		Tags:       tags,
+		TagVars:    load.DefaultTagVars(),
+	}
+
+	ix := load.Instances(obj.Spec.Paths, cfg)
+
+	for _, inst := range ix {
+		if inst.Err != nil {
+			return nil, inst.Err
+		}
+	}
+
+	values, err := cctx.BuildInstances(ix)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build instances: %w", err)
+	}
+
+	return values, nil
 }
 
-func (r *KustomizationReconciler) build(ctx context.Context,
-	obj *kustomizev1.Kustomization, u unstructured.Unstructured,
-	workDir, dirPath string) ([]byte, error) {
-
-	// Build decryptor.
-	decryptorOpts := []decryptor.Option{
-		decryptor.WithRoot(workDir),
-	}
-	if r.TokenCache != nil {
-		decryptorOpts = append(decryptorOpts, decryptor.WithTokenCache(*r.TokenCache))
-	}
-	if name, ns := r.SOPSAgeSecret, os.Getenv(runtimeCtrl.EnvRuntimeNamespace); name != "" && ns != "" {
-		decryptorOpts = append(decryptorOpts, decryptor.WithSOPSAgeSecret(name, ns))
-	}
-	dec, cleanup, err := decryptor.New(r.Client, obj, decryptorOpts...)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	// Import keys and static credentials for decryption.
-	if err := dec.ImportKeys(ctx); err != nil {
-		return nil, err
-	}
-
-	// Set options for secret-less authentication with cloud providers for decryption.
-	dec.SetAuthOptions(ctx)
-
-	// Decrypt Kustomize EnvSources files before build
-	if err = dec.DecryptSources(dirPath); err != nil {
-		return nil, fmt.Errorf("error decrypting sources: %w", err)
-	}
-
-	m, err := generator.SecureBuild(workDir, dirPath, !r.NoRemoteBases)
-	if err != nil {
-		return nil, fmt.Errorf("kustomize build failed: %w", err)
-	}
-
-	for _, res := range m.Resources() {
-		// check if resources conform to the Kubernetes API conventions
-		if res.GetName() == "" || res.GetKind() == "" || res.GetApiVersion() == "" {
-			return nil, fmt.Errorf("failed to decode Kubernetes apiVersion, kind and name from: %v", res.String())
+func (r *CueReconciler) getValueFromSource(ctx context.Context, namespace string, tag *cuev1.TagSource) (string, error) {
+	if tag.ConfigMapKeyRef != nil {
+		ref := types.NamespacedName{
+			Namespace: namespace,
+			Name:      tag.ConfigMapKeyRef.Name,
 		}
-
-		// check if resources are encrypted and decrypt them before generating the final YAML
-		if obj.Spec.Decryption != nil {
-			outRes, err := dec.DecryptResource(res)
-			if err != nil {
-				return nil, fmt.Errorf("decryption failed for '%s/%s': %w", res.GetGvk(), res.GetName(), err)
-			}
-
-			if outRes != nil {
-				_, err = m.Replace(res)
-				if err != nil {
-					return nil, err
-				}
-			}
+		var cm corev1.ConfigMap
+		if err := r.Get(ctx, ref, &cm); err != nil {
+			return "", fmt.Errorf("failed to get configmap: %w", err)
 		}
-
-		// run variable substitutions
-		if obj.Spec.PostBuild != nil {
-			outRes, err := generator.SubstituteVariables(ctx, r.Client, u, res,
-				generator.SubstituteWithStrict(r.StrictSubstitutions))
-			if err != nil {
-				return nil, fmt.Errorf("post build failed for '%s/%s': %w", res.GetGvk(), res.GetName(), err)
-			}
-
-			if outRes != nil {
-				_, err = m.Replace(res)
-				if err != nil {
-					return nil, err
-				}
-			}
+		val, ok := cm.Data[tag.ConfigMapKeyRef.Key]
+		if !ok {
+			return "", fmt.Errorf("missing key %s in ConfigMap %s", tag.ConfigMapKeyRef.Key, tag.ConfigMapKeyRef.Name)
 		}
+		return val, nil
+	} else if tag.SecretKeyRef != nil {
+		ref := types.NamespacedName{
+			Namespace: namespace,
+			Name:      tag.SecretKeyRef.Name,
+		}
+		var cm corev1.Secret
+		if err := r.Get(ctx, ref, &cm); err != nil {
+			return "", fmt.Errorf("failed to get secret: %w", err)
+		}
+		val, ok := cm.Data[tag.SecretKeyRef.Key]
+		if !ok {
+			return "", fmt.Errorf("missing key %s in Secret %s", tag.SecretKeyRef.Key, tag.SecretKeyRef.Name)
+		}
+		return string(val), nil
 	}
-
-	resources, err := m.AsYaml()
-	if err != nil {
-		return nil, fmt.Errorf("kustomize build failed: %w", err)
-	}
-
-	return resources, nil
+	return "", fmt.Errorf("either ConfigMap or Secret has to be specified")
 }
 
-func (r *KustomizationReconciler) apply(ctx context.Context,
+var (
+	apiVersionPath   = cue.ParsePath("apiVersion")
+	kindPath         = cue.ParsePath("kind")
+	metadataNamePath = cue.ParsePath("metadata.name")
+)
+
+func (r *CueReconciler) build(ctx context.Context, values []cue.Value, obj *cuev1.CueExport) ([]byte, error) {
+	log := ctrl.LoggerFrom(ctx)
+	timeout := obj.GetTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	log.V(1).Info("building resources", "len(values)", len(values))
+
+	resources := [][]byte{}
+	errors := []error{}
+	for _, value := range values {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("failed to build cue values: %w", ctx.Err())
+		}
+		log.V(1).Info("searching for resources", "value.Kind", value.Kind())
+
+		if len(obj.Spec.Exprs) > 0 {
+			for _, e := range obj.Spec.Exprs {
+				log.V(1).Info("evaluating expr", "expr", e)
+				ex, err := parser.ParseExpr("", e)
+				if err != nil {
+					errors = append(errors, err)
+				} else {
+					result := value.Context().BuildExpr(ex, cue.Scope(value), cue.InferBuiltins(true))
+					moreResources, err := marshalMaybeList(result)
+					if err != nil {
+						errors = append(errors, err)
+					}
+					resources = append(resources, moreResources...)
+				}
+			}
+		} else {
+			err := value.Err()
+			log.V(1).Info("searching for apiVersion, kind, and metadata.name fields in value", "err", err)
+			if err != nil {
+				errors = append(errors, err)
+			}
+			value.Walk(func(v cue.Value) bool {
+				if v.Kind() == cue.StructKind &&
+					v.LookupPath(apiVersionPath).Exists() &&
+					v.LookupPath(kindPath).Exists() &&
+					v.LookupPath(metadataNamePath).Exists() {
+
+					log.V(1).Info("found for apiVersion, kind, and metadata.name fields in struct", "path", v.Path())
+
+					resource, err := v.MarshalJSON()
+					if err != nil {
+						errors = append(errors, err)
+						log.V(1).Info("added err to to errors", "error", err)
+					} else {
+						resources = append(resources, resource)
+						log.V(1).Info("added value to objects")
+					}
+
+					return false
+				}
+				return true
+			}, nil)
+		}
+	}
+
+	if len(errors) > 0 {
+		return nil, kerrors.NewAggregate(errors)
+	}
+
+	if len(resources) == 0 {
+		return nil, fmt.Errorf("found no objects in values")
+	}
+
+	return bytes.Join(resources, []byte("\n---\n")), nil
+}
+
+func (r *CueReconciler) checkGates(ctx context.Context, values []cue.Value, obj *cuev1.CueExport) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	var errors []error
+	for _, g := range obj.Spec.Gates {
+		ex, err := parser.ParseExpr("", g.Expr)
+		if err != nil {
+			errors = append(errors, fmt.Errorf("failed to parse gate expr: %w", err))
+			continue
+		}
+
+		for _, value := range values {
+			result := value.Context().BuildExpr(ex, cue.Scope(value), cue.InferBuiltins(true))
+
+			valid := result.Validate()
+			open, err := result.Bool()
+			if !open || valid != nil {
+				log.Info("gate check failed", "gate", g.Name, "expr", g.Expr, "result", result, "error", err)
+				errors = append(errors, fmt.Errorf("%s failed: %w", g.Name, err))
+			}
+		}
+	}
+
+	return kerrors.NewAggregate(errors)
+}
+
+func marshalMaybeList(value cue.Value) ([][]byte, error) {
+	errors := []error{}
+	objects := [][]byte{}
+	switch value.Kind() {
+	case cue.StructKind:
+		obj, err := value.MarshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		objects = append(objects, obj)
+	case cue.ListKind:
+		objects := [][]byte{}
+		items, err := value.List()
+		if err != nil {
+			return nil, err
+		}
+		for hasNext := items.Next(); hasNext; hasNext = items.Next() {
+			object, err := items.Value().MarshalJSON()
+			if err != nil {
+				errors = append(errors, err)
+			} else {
+				objects = append(objects, object)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("unknown kubernetes object kind %v", value)
+	}
+	return objects, kerrors.NewAggregate(errors)
+}
+
+func (r *CueReconciler) apply(ctx context.Context,
 	manager *ssa.ResourceManager,
-	obj *kustomizev1.Kustomization,
+	obj *cuev1.CueExport,
 	revision string,
 	originRevision string,
 	objects []*unstructured.Unstructured) (bool, *ssa.ChangeSet, error) {
@@ -852,14 +974,14 @@ func (r *KustomizationReconciler) apply(ctx context.Context,
 	applyOpts := ssa.DefaultApplyOptions()
 	applyOpts.Force = obj.Spec.Force
 	applyOpts.ExclusionSelector = map[string]string{
-		fmt.Sprintf("%s/reconcile", kustomizev1.GroupVersion.Group): kustomizev1.DisabledValue,
-		fmt.Sprintf("%s/ssa", kustomizev1.GroupVersion.Group):       kustomizev1.IgnoreValue,
+		fmt.Sprintf("%s/reconcile", cuev1.GroupVersion.Group): cuev1.DisabledValue,
+		fmt.Sprintf("%s/ssa", cuev1.GroupVersion.Group):       cuev1.IgnoreValue,
 	}
 	applyOpts.IfNotPresentSelector = map[string]string{
-		fmt.Sprintf("%s/ssa", kustomizev1.GroupVersion.Group): kustomizev1.IfNotPresentValue,
+		fmt.Sprintf("%s/ssa", cuev1.GroupVersion.Group): cuev1.IfNotPresentValue,
 	}
 	applyOpts.ForceSelector = map[string]string{
-		fmt.Sprintf("%s/force", kustomizev1.GroupVersion.Group): kustomizev1.EnabledValue,
+		fmt.Sprintf("%s/force", cuev1.GroupVersion.Group): cuev1.EnabledValue,
 	}
 	applyOpts.CustomStageKinds = r.CustomStageKinds
 
@@ -902,26 +1024,11 @@ func (r *KustomizationReconciler) apply(ctx context.Context,
 		Annotations: []string{
 			// remove the kubectl annotation
 			corev1.LastAppliedConfigAnnotation,
-			// remove deprecated fluxcd.io annotations
-			"kustomize.toolkit.fluxcd.io/checksum",
-			"fluxcd.io/sync-checksum",
-		},
-		Labels: []string{
-			// remove deprecated fluxcd.io labels
-			"fluxcd.io/sync-gc-mark",
 		},
 		FieldManagers: fieldManagers,
 		Exclusions: map[string]string{
-			fmt.Sprintf("%s/ssa", kustomizev1.GroupVersion.Group): kustomizev1.MergeValue,
+			fmt.Sprintf("%s/ssa", cuev1.GroupVersion.Group): cuev1.MergeValue,
 		},
-	}
-
-	for _, u := range objects {
-		if decryptor.IsEncryptedSecret(u) && !decryptor.IsDecryptionDisabled(u.GetAnnotations()) {
-			return false, nil,
-				fmt.Errorf("%s is SOPS encrypted, configuring decryption is required for this secret to be reconciled",
-					ssautil.FmtUnstructured(u))
-		}
 	}
 
 	// contains the objects' metadata after apply
@@ -966,10 +1073,10 @@ func (r *KustomizationReconciler) apply(ctx context.Context,
 	return applyLog != "", resultSet, nil
 }
 
-func (r *KustomizationReconciler) checkHealth(ctx context.Context,
+func (r *CueReconciler) checkHealth(ctx context.Context,
 	manager *ssa.ResourceManager,
 	patcher *patch.SerialPatcher,
-	obj *kustomizev1.Kustomization,
+	obj *cuev1.CueExport,
 	revision string,
 	originRevision string,
 	isNewRevision bool,
@@ -998,7 +1105,7 @@ func (r *KustomizationReconciler) checkHealth(ctx context.Context,
 	// Guard against deadlock (waiting on itself).
 	var toCheck []object.ObjMetadata
 	for _, o := range objects {
-		if o.GroupKind.Kind == kustomizev1.KustomizationKind &&
+		if o.GroupKind.Kind == cuev1.CueExportKind &&
 			o.Name == obj.GetName() &&
 			o.Namespace == obj.GetNamespace() {
 			continue
@@ -1047,9 +1154,9 @@ func (r *KustomizationReconciler) checkHealth(ctx context.Context,
 	return nil
 }
 
-func (r *KustomizationReconciler) prune(ctx context.Context,
+func (r *CueReconciler) prune(ctx context.Context,
 	manager *ssa.ResourceManager,
-	obj *kustomizev1.Kustomization,
+	obj *cuev1.CueExport,
 	revision string,
 	originRevision string,
 	objects []*unstructured.Unstructured) (bool, error) {
@@ -1063,8 +1170,8 @@ func (r *KustomizationReconciler) prune(ctx context.Context,
 		PropagationPolicy: metav1.DeletePropagationBackground,
 		Inclusions:        manager.GetOwnerLabels(obj.Name, obj.Namespace),
 		Exclusions: map[string]string{
-			fmt.Sprintf("%s/prune", kustomizev1.GroupVersion.Group):     kustomizev1.DisabledValue,
-			fmt.Sprintf("%s/reconcile", kustomizev1.GroupVersion.Group): kustomizev1.DisabledValue,
+			fmt.Sprintf("%s/prune", cuev1.GroupVersion.Group):     cuev1.DisabledValue,
+			fmt.Sprintf("%s/reconcile", cuev1.GroupVersion.Group): cuev1.DisabledValue,
 		},
 	}
 
@@ -1085,8 +1192,8 @@ func (r *KustomizationReconciler) prune(ctx context.Context,
 
 // finalizerShouldDeleteResources determines if resources should be deleted
 // based on the object's inventory and deletion policy.
-// A suspended Kustomization or one without an inventory will not delete resources.
-func finalizerShouldDeleteResources(obj *kustomizev1.Kustomization) bool {
+// A suspended CueExport or one without an inventory will not delete resources.
+func finalizerShouldDeleteResources(obj *cuev1.CueExport) bool {
 	if obj.Spec.Suspend {
 		return false
 	}
@@ -1096,11 +1203,11 @@ func finalizerShouldDeleteResources(obj *kustomizev1.Kustomization) bool {
 	}
 
 	switch obj.GetDeletionPolicy() {
-	case kustomizev1.DeletionPolicyMirrorPrune:
+	case cuev1.DeletionPolicyMirrorPrune:
 		return obj.Spec.Prune
-	case kustomizev1.DeletionPolicyDelete:
+	case cuev1.DeletionPolicyDelete:
 		return true
-	case kustomizev1.DeletionPolicyWaitForTermination:
+	case cuev1.DeletionPolicyWaitForTermination:
 		return true
 	default:
 		return false
@@ -1113,8 +1220,8 @@ func finalizerShouldDeleteResources(obj *kustomizev1.Kustomization) bool {
 // to be terminated by the Kubernetes Garbage Collector for the specified timeout duration.
 // If the service account used for impersonation is no longer available or if a timeout occurs
 // while waiting for resources to be terminated, an error is logged and the finalizer is removed.
-func (r *KustomizationReconciler) finalize(ctx context.Context,
-	obj *kustomizev1.Kustomization) (ctrl.Result, error) {
+func (r *CueReconciler) finalize(ctx context.Context,
+	obj *cuev1.CueExport) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	if finalizerShouldDeleteResources(obj) {
 		objects, _ := inventory.List(obj.Status.Inventory)
@@ -1150,15 +1257,15 @@ func (r *KustomizationReconciler) finalize(ctx context.Context,
 
 			resourceManager := ssa.NewResourceManager(kubeClient, nil, ssa.Owner{
 				Field: r.ControllerName,
-				Group: kustomizev1.GroupVersion.Group,
+				Group: cuev1.GroupVersion.Group,
 			})
 
 			opts := ssa.DeleteOptions{
 				PropagationPolicy: metav1.DeletePropagationBackground,
 				Inclusions:        resourceManager.GetOwnerLabels(obj.Name, obj.Namespace),
 				Exclusions: map[string]string{
-					fmt.Sprintf("%s/prune", kustomizev1.GroupVersion.Group):     kustomizev1.DisabledValue,
-					fmt.Sprintf("%s/reconcile", kustomizev1.GroupVersion.Group): kustomizev1.DisabledValue,
+					fmt.Sprintf("%s/prune", cuev1.GroupVersion.Group):     cuev1.DisabledValue,
+					fmt.Sprintf("%s/reconcile", cuev1.GroupVersion.Group): cuev1.DisabledValue,
 				},
 			}
 
@@ -1174,7 +1281,7 @@ func (r *KustomizationReconciler) finalize(ctx context.Context,
 				r.event(obj, obj.Status.LastAppliedRevision, obj.Status.LastAppliedOriginRevision, eventv1.EventSeverityInfo, changeSet.String(), nil)
 
 				// Wait for the resources marked for deletion to be terminated.
-				if obj.GetDeletionPolicy() == kustomizev1.DeletionPolicyWaitForTermination {
+				if obj.GetDeletionPolicy() == cuev1.DeletionPolicyWaitForTermination {
 					if err := resourceManager.WaitForSetTermination(changeSet, ssa.WaitOptions{
 						Interval: 2 * time.Second,
 						Timeout:  obj.GetTimeout(),
@@ -1195,28 +1302,28 @@ func (r *KustomizationReconciler) finalize(ctx context.Context,
 	}
 
 	// Remove our finalizer from the list and update it
-	controllerutil.RemoveFinalizer(obj, kustomizev1.KustomizationFinalizer)
+	controllerutil.RemoveFinalizer(obj, cuev1.CueExportFinalizer)
 
 	// Cleanup caches.
-	for _, op := range kustomizev1.AllMetrics {
-		r.TokenCache.DeleteEventsForObject(kustomizev1.KustomizationKind, obj.GetName(), obj.GetNamespace(), op)
+	for _, op := range cuev1.AllMetrics {
+		r.TokenCache.DeleteEventsForObject(cuev1.CueExportKind, obj.GetName(), obj.GetNamespace(), op)
 	}
 
 	// Stop reconciliation as the object is being deleted
 	return ctrl.Result{}, nil
 }
 
-func (r *KustomizationReconciler) event(obj *kustomizev1.Kustomization,
+func (r *CueReconciler) event(obj *cuev1.CueExport,
 	revision, originRevision, severity, msg string,
 	metadata map[string]string) {
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
 	if revision != "" {
-		metadata[kustomizev1.GroupVersion.Group+"/"+eventv1.MetaRevisionKey] = revision
+		metadata[cuev1.GroupVersion.Group+"/"+eventv1.MetaRevisionKey] = revision
 	}
 	if originRevision != "" {
-		metadata[kustomizev1.GroupVersion.Group+"/"+eventv1.MetaOriginRevisionKey] = originRevision
+		metadata[cuev1.GroupVersion.Group+"/"+eventv1.MetaOriginRevisionKey] = originRevision
 	}
 
 	reason := severity
@@ -1232,8 +1339,8 @@ func (r *KustomizationReconciler) event(obj *kustomizev1.Kustomization,
 	r.EventRecorder.AnnotatedEventf(obj, metadata, eventType, reason, msg)
 }
 
-func (r *KustomizationReconciler) finalizeStatus(ctx context.Context,
-	obj *kustomizev1.Kustomization,
+func (r *CueReconciler) finalizeStatus(ctx context.Context,
+	obj *cuev1.CueExport,
 	patcher *patch.SerialPatcher) error {
 	// Set the value of the reconciliation request in status.
 	if v, ok := meta.ReconcileAnnotationValue(obj.GetAnnotations()); ok {
@@ -1260,8 +1367,8 @@ func (r *KustomizationReconciler) finalizeStatus(ctx context.Context,
 	return r.patch(ctx, obj, patcher)
 }
 
-func (r *KustomizationReconciler) patch(ctx context.Context,
-	obj *kustomizev1.Kustomization,
+func (r *CueReconciler) patch(ctx context.Context,
+	obj *cuev1.CueExport,
 	patcher *patch.SerialPatcher) (retErr error) {
 
 	// Configure the runtime patcher.
@@ -1297,8 +1404,8 @@ func (r *KustomizationReconciler) patch(ctx context.Context,
 // Kubernetes client of the controller and the status poller.
 // Should be used for reconciliations that are not configured to use
 // ServiceAccount impersonation or kubeconfig.
-func (r *KustomizationReconciler) getClientAndPoller(
-	obj *kustomizev1.Kustomization,
+func (r *CueReconciler) getClientAndPoller(
+	obj *cuev1.CueExport,
 	readerCtor func(apimeta.RESTMapper) engine.StatusReader,
 ) (client.Client, *polling.StatusPoller) {
 
@@ -1319,16 +1426,16 @@ func (r *KustomizationReconciler) getClientAndPoller(
 // getProviderRESTConfigFetcher returns a ProviderRESTConfigFetcher for the
 // Kustomization object, which is used to fetch the kubeconfig for a ConfigMap
 // reference in the Kustomization spec.
-func (r *KustomizationReconciler) getProviderRESTConfigFetcher(obj *kustomizev1.Kustomization) runtimeClient.ProviderRESTConfigFetcher {
+func (r *CueReconciler) getProviderRESTConfigFetcher(obj *cuev1.CueExport) runtimeClient.ProviderRESTConfigFetcher {
 	var provider runtimeClient.ProviderRESTConfigFetcher
 	if kc := obj.Spec.KubeConfig; kc != nil && kc.SecretRef == nil && kc.ConfigMapRef != nil {
 		var opts []auth.Option
 		if r.TokenCache != nil {
 			involvedObject := cache.InvolvedObject{
-				Kind:      kustomizev1.KustomizationKind,
+				Kind:      cuev1.CueExportKind,
 				Name:      obj.GetName(),
 				Namespace: obj.GetNamespace(),
-				Operation: kustomizev1.MetricFetchKubeConfig,
+				Operation: cuev1.MetricFetchKubeConfig,
 			}
 			opts = append(opts, auth.WithCache(*r.TokenCache, involvedObject))
 		}

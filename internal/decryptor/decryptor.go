@@ -60,10 +60,10 @@ import (
 	kustypes "sigs.k8s.io/kustomize/api/types"
 	"sigs.k8s.io/yaml"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
-	intawskms "github.com/fluxcd/kustomize-controller/internal/sops/awskms"
-	intazkv "github.com/fluxcd/kustomize-controller/internal/sops/azkv"
-	intkeyservice "github.com/fluxcd/kustomize-controller/internal/sops/keyservice"
+	kustomizev1 "github.com/addreas/cue-controller/api/v1"
+	intawskms "github.com/addreas/cue-controller/internal/sops/awskms"
+	intazkv "github.com/addreas/cue-controller/internal/sops/azkv"
+	intkeyservice "github.com/addreas/cue-controller/internal/sops/keyservice"
 )
 
 const (

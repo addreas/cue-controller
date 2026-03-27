@@ -34,11 +34,11 @@ import (
 	"github.com/fluxcd/pkg/runtime/predicates"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
+	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
 )
 
-// KustomizationReconcilerOptions contains options for the KustomizationReconciler.
-type KustomizationReconcilerOptions struct {
+// CueExportReconcilerOptions contains options for the CueReconciler.
+type CueReconcilerOptions struct {
 	RateLimiter                workqueue.TypedRateLimiter[reconcile.Request]
 	WatchConfigs               bool
 	WatchConfigsPredicate      predicate.Predicate
@@ -47,9 +47,9 @@ type KustomizationReconcilerOptions struct {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// It indexes the Kustomizations by the source references, and sets up watches for
-// changes in those sources, as well as for ConfigMaps and Secrets that the Kustomizations depend on.
-func (r *KustomizationReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, opts KustomizationReconcilerOptions) error {
+// It indexes the CueExports by the source references, and sets up watches for
+// changes in those sources, as well as for ConfigMaps and Secrets that the CueExports depend on.
+func (r *CueReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, opts CueReconcilerOptions) error {
 	const (
 		indexExternalArtifact = ".metadata.externalArtifact"
 		indexOCIRepository    = ".metadata.ociRepository"
@@ -59,45 +59,45 @@ func (r *KustomizationReconciler) SetupWithManager(ctx context.Context, mgr ctrl
 		indexSecret           = ".metadata.secret"
 	)
 
-	// Index the Kustomizations by the OCIRepository references they (may) point at.
-	if err := mgr.GetCache().IndexField(ctx, &kustomizev1.Kustomization{}, indexOCIRepository,
+	// Index the CueExports by the OCIRepository references they (may) point at.
+	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, indexOCIRepository,
 		r.indexBy(sourcev1.OCIRepositoryKind)); err != nil {
 		return fmt.Errorf("failed creating index %s: %w", indexOCIRepository, err)
 	}
 
-	// Index the Kustomizations by the GitRepository references they (may) point at.
-	if err := mgr.GetCache().IndexField(ctx, &kustomizev1.Kustomization{}, indexGitRepository,
+	// Index the CueExports by the GitRepository references they (may) point at.
+	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, indexGitRepository,
 		r.indexBy(sourcev1.GitRepositoryKind)); err != nil {
 		return fmt.Errorf("failed creating index %s: %w", indexGitRepository, err)
 	}
 
-	// Index the Kustomizations by the Bucket references they (may) point at.
-	if err := mgr.GetCache().IndexField(ctx, &kustomizev1.Kustomization{}, indexBucket,
+	// Index the CueExports by the Bucket references they (may) point at.
+	if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, indexBucket,
 		r.indexBy(sourcev1.BucketKind)); err != nil {
 		return fmt.Errorf("failed creating index %s: %w", indexBucket, err)
 	}
 
-	// Index the Kustomizations by the ExternalArtifact references they (may) point at (if enabled).
+	// Index the CueExports by the ExternalArtifact references they (may) point at (if enabled).
 	if opts.WatchExternalArtifacts {
-		if err := mgr.GetCache().IndexField(ctx, &kustomizev1.Kustomization{}, indexExternalArtifact,
+		if err := mgr.GetCache().IndexField(ctx, &cuev1.CueExport{}, indexExternalArtifact,
 			r.indexBy(sourcev1.ExternalArtifactKind)); err != nil {
 			return fmt.Errorf("failed creating index %s: %w", indexExternalArtifact, err)
 		}
 	}
 
-	// Index the Kustomization by the ConfigMap references they point to.
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &kustomizev1.Kustomization{}, indexConfigMap,
+	// Index the CueExport by the ConfigMap references they point to.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &cuev1.CueExport{}, indexConfigMap,
 		func(o client.Object) []string {
-			obj := o.(*kustomizev1.Kustomization)
+			obj := o.(*cuev1.CueExport)
 			namespace := obj.GetNamespace()
 			var keys []string
 			if kc := obj.Spec.KubeConfig; kc != nil && kc.ConfigMapRef != nil {
 				keys = append(keys, fmt.Sprintf("%s/%s", namespace, kc.ConfigMapRef.Name))
 			}
-			if pb := obj.Spec.PostBuild; pb != nil {
-				for _, ref := range pb.SubstituteFrom {
-					if ref.Kind == "ConfigMap" {
-						keys = append(keys, fmt.Sprintf("%s/%s", namespace, ref.Name))
+			if tags := obj.Spec.Tags; tags != nil {
+				for _, ref := range tags {
+					if ref.ValueFrom != nil && ref.ValueFrom.ConfigMapKeyRef != nil {
+						keys = append(keys, fmt.Sprintf("%s/%s", namespace, ref.ValueFrom.ConfigMapKeyRef.Name))
 					}
 				}
 			}
@@ -107,22 +107,20 @@ func (r *KustomizationReconciler) SetupWithManager(ctx context.Context, mgr ctrl
 		return fmt.Errorf("failed creating index %s: %w", indexConfigMap, err)
 	}
 
-	// Index the Kustomization by the Secret references they point to.
-	if err := mgr.GetFieldIndexer().IndexField(ctx, &kustomizev1.Kustomization{}, indexSecret,
+	// Index the CueExport by the Secret references they point to.
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &cuev1.CueExport{}, indexSecret,
 		func(o client.Object) []string {
-			obj := o.(*kustomizev1.Kustomization)
+			obj := o.(*cuev1.CueExport)
 			namespace := obj.GetNamespace()
 			var keys []string
-			if dec := obj.Spec.Decryption; dec != nil && dec.SecretRef != nil {
-				keys = append(keys, fmt.Sprintf("%s/%s", namespace, dec.SecretRef.Name))
-			}
+
 			if kc := obj.Spec.KubeConfig; kc != nil && kc.SecretRef != nil {
 				keys = append(keys, fmt.Sprintf("%s/%s", namespace, kc.SecretRef.Name))
 			}
-			if pb := obj.Spec.PostBuild; pb != nil {
-				for _, ref := range pb.SubstituteFrom {
-					if ref.Kind == "Secret" {
-						keys = append(keys, fmt.Sprintf("%s/%s", namespace, ref.Name))
+			if tags := obj.Spec.Tags; tags != nil {
+				for _, ref := range tags {
+					if ref.ValueFrom != nil && ref.ValueFrom.SecretKeyRef != nil {
+						keys = append(keys, fmt.Sprintf("%s/%s", namespace, ref.ValueFrom.SecretKeyRef.Name))
 					}
 				}
 			}
@@ -147,13 +145,13 @@ func (r *KustomizationReconciler) SetupWithManager(ctx context.Context, mgr ctrl
 			return handler.EnqueueRequestsFromMapFunc(fn)
 		}
 		blder = ctrl.NewControllerManagedBy(mgr).
-			For(&kustomizev1.Kustomization{}, builder.WithPredicates(ksPredicate))
+			For(&cuev1.CueExport{}, builder.WithPredicates(ksPredicate))
 	} else {
 		wr := runtimeCtrl.WrapReconciler(r)
 		toComplete = wr
 		enqueueRequestsFromMapFunc = wr.EnqueueRequestsFromMapFunc
 		blder = runtimeCtrl.NewControllerManagedBy(mgr, wr).
-			For(&kustomizev1.Kustomization{}, ksPredicate).Builder
+			For(&cuev1.CueExport{}, ksPredicate).Builder
 	}
 
 	blder.

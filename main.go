@@ -53,13 +53,13 @@ import (
 	ssautils "github.com/fluxcd/pkg/ssa/utils"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1"
-	"github.com/fluxcd/kustomize-controller/internal/controller"
-	"github.com/fluxcd/kustomize-controller/internal/features"
+	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
+	"github.com/addreas/cue-controller/internal/controller"
+	"github.com/addreas/cue-controller/internal/features"
 	// +kubebuilder:scaffold:imports
 )
 
-const controllerName = "kustomize-controller"
+const controllerName = "cue-controller"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -70,7 +70,7 @@ func init() {
 	_ = clientgoscheme.AddToScheme(scheme)
 
 	_ = sourcev1.AddToScheme(scheme)
-	_ = kustomizev1.AddToScheme(scheme)
+	_ = cuev1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -222,7 +222,7 @@ func main() {
 		},
 		Cache: ctrlcache.Options{
 			ByObject: map[ctrlclient.Object]ctrlcache.ByObject{
-				&kustomizev1.Kustomization{}: {Label: watchSelector},
+				&cuev1.CueExport{}: {Label: watchSelector},
 			},
 		},
 		Metrics: metricsserver.Options{
@@ -255,7 +255,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	metricsH := runtimeCtrl.NewMetrics(mgr, metrics.MustMakeRecorder(), kustomizev1.KustomizationFinalizer)
+	metricsH := runtimeCtrl.NewMetrics(mgr, metrics.MustMakeRecorder(), cuev1.CueExportFinalizer)
 
 	restMapper, err := runtimeClient.NewDynamicRESTMapper(mgr.GetConfig())
 	if err != nil {
@@ -338,7 +338,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.KustomizationReconciler{
+	if err = (&controller.CueReconciler{
 		AdditiveCELDependencyCheck: additiveCELDependencyCheck,
 		AllowExternalArtifact:      allowExternalArtifact,
 		APIReader:                  mgr.GetAPIReader(),
@@ -364,7 +364,7 @@ func main() {
 		StrictSubstitutions:        strictSubstitutions,
 		TokenCache:                 tokenCache,
 		CustomStageKinds:           customStageKinds,
-	}).SetupWithManager(ctx, mgr, controller.KustomizationReconcilerOptions{
+	}).SetupWithManager(ctx, mgr, controller.CueReconcilerOptions{
 		RateLimiter:                runtimeCtrl.GetRateLimiter(rateLimiterOptions),
 		WatchConfigs:               watchConfigs,
 		WatchConfigsPredicate:      watchConfigsPredicate,
