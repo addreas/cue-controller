@@ -19,11 +19,9 @@ package decryptor
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,7 +32,6 @@ import (
 	gcpkmsapi "cloud.google.com/go/kms/apiv1"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
-	securejoin "github.com/cyphar/filepath-securejoin"
 	"github.com/fluxcd/pkg/auth"
 	"github.com/fluxcd/pkg/auth/aws"
 	"github.com/fluxcd/pkg/auth/azure"
@@ -55,10 +52,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/kustomize/api/konfig"
-	"sigs.k8s.io/kustomize/api/resource"
-	kustypes "sigs.k8s.io/kustomize/api/types"
-	"sigs.k8s.io/yaml"
 
 	cuev1 "github.com/addreas/cue-controller/api/v1"
 	intawskms "github.com/addreas/cue-controller/internal/sops/awskms"
@@ -126,9 +119,9 @@ type Decryptor struct {
 	root string
 	// client is the Kubernetes client used to e.g. retrieve Secrets with.
 	client client.Client
-	// kustomization is the v1.Kustomization we are decrypting for.
+	// cueExport is the v1.Kustomization we are decrypting for.
 	// The v1.Decryption of the object is used to ImportKeys().
-	kustomization *cuev1.CueExport
+	cueExport *cuev1.CueExport
 	// maxFileSize is the max size in bytes a file is allowed to have to be
 	// decrypted. Defaults to maxEncryptedFileSize.
 	maxFileSize int64
@@ -171,17 +164,17 @@ type Decryptor struct {
 
 // New creates a new Decryptor, with a temporary GnuPG
 // home directory to Decryptor.ImportKeys() into.
-func New(client client.Client, kustomization *cuev1.CueExport, opts ...Option) (*Decryptor, func(), error) {
+func New(client client.Client, cueExport *cuev1.CueExport, opts ...Option) (*Decryptor, func(), error) {
 	gnuPGHome, err := pgp.NewGnuPGHome()
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot create decryptor: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(gnuPGHome.String()) }
 	d := &Decryptor{
-		client:        client,
-		kustomization: kustomization,
-		maxFileSize:   maxEncryptedFileSize,
-		gnuPGHome:     gnuPGHome,
+		client:      client,
+		cueExport:   cueExport,
+		maxFileSize: maxEncryptedFileSize,
+		gnuPGHome:   gnuPGHome,
 	}
 	for _, opt := range opts {
 		opt(d)
@@ -215,15 +208,15 @@ func IsEncryptedSecret(object *unstructured.Unstructured) bool {
 // For the import of PGP keys, the Decryptor must be configured with
 // an absolute GnuPG home directory path.
 func (d *Decryptor) ImportKeys(ctx context.Context) error {
-	if d.kustomization.Spec.Decryption == nil ||
-		(d.kustomization.Spec.Decryption.SecretRef == nil && d.sopsAgeSecret == nil) {
+	if d.cueExport.Spec.Decryption == nil ||
+		(d.cueExport.Spec.Decryption.SecretRef == nil && d.sopsAgeSecret == nil) {
 		return nil
 	}
 
-	provider := d.kustomization.Spec.Decryption.Provider
+	provider := d.cueExport.Spec.Decryption.Provider
 	switch provider {
 	case DecryptionProviderSOPS:
-		secretRef := d.kustomization.Spec.Decryption.SecretRef
+		secretRef := d.cueExport.Spec.Decryption.SecretRef
 
 		// We handle the SOPS age global decryption separately, as most of the other
 		// decryption providers already support global decryption in other ways, and
@@ -250,7 +243,7 @@ func (d *Decryptor) ImportKeys(ctx context.Context) error {
 		}
 
 		secretName := types.NamespacedName{
-			Namespace: d.kustomization.GetNamespace(),
+			Namespace: d.cueExport.GetNamespace(),
 			Name:      secretRef.Name,
 		}
 
@@ -317,29 +310,29 @@ func (d *Decryptor) ImportKeys(ctx context.Context) error {
 // SetAuthOptions sets the authentication options for secret-less authentication
 // with cloud providers.
 func (d *Decryptor) SetAuthOptions(ctx context.Context) {
-	if d.kustomization.Spec.Decryption == nil {
+	if d.cueExport.Spec.Decryption == nil {
 		return
 	}
 
-	switch d.kustomization.Spec.Decryption.Provider {
+	switch d.cueExport.Spec.Decryption.Provider {
 	case DecryptionProviderSOPS:
 		opts := []auth.Option{
 			auth.WithClient(d.client),
 		}
 
-		saName := d.kustomization.Spec.Decryption.ServiceAccountName
+		saName := d.cueExport.Spec.Decryption.ServiceAccountName
 		if saName == "" {
 			saName = auth.GetDefaultDecryptionServiceAccount()
 		}
 		if saName != "" {
 			opts = append(opts, auth.WithServiceAccountName(saName))
-			opts = append(opts, auth.WithServiceAccountNamespace(d.kustomization.GetNamespace()))
+			opts = append(opts, auth.WithServiceAccountNamespace(d.cueExport.GetNamespace()))
 		}
 
 		involvedObject := cache.InvolvedObject{
 			Kind:      cuev1.CueExportKind,
-			Name:      d.kustomization.GetName(),
-			Namespace: d.kustomization.GetNamespace(),
+			Name:      d.cueExport.GetName(),
+			Namespace: d.cueExport.GetNamespace(),
 		}
 
 		if d.awsCredentialsProvider == nil {
@@ -438,73 +431,6 @@ func (d *Decryptor) SopsDecryptWithFormat(data []byte, inputFormat, outputFormat
 	return out, err
 }
 
-// DecryptResource attempts to decrypt the provided resource with the
-// decryption provider specified on the Kustomization, overwriting the resource
-// with the decrypted data.
-// It has special support for Kubernetes Secrets with encrypted data entries
-// while decrypting with DecryptionProviderSOPS, to allow individual data entries
-// injected by e.g. a Kustomize secret generator to be decrypted
-func (d *Decryptor) DecryptResource(res *resource.Resource) (*resource.Resource, error) {
-	if res == nil ||
-		d.kustomization.Spec.Decryption == nil ||
-		d.kustomization.Spec.Decryption.Provider == "" ||
-		IsDecryptionDisabled(res.GetAnnotations()) {
-		return nil, nil
-	}
-
-	switch d.kustomization.Spec.Decryption.Provider {
-	case DecryptionProviderSOPS:
-		switch {
-		case isSOPSEncryptedResource(res):
-			// As we are expecting to decrypt right before applying, we do not
-			// care about keeping any other data (e.g. comments) around.
-			// We can therefore simply work with JSON, which saves us from e.g.
-			// JSON -> YAML -> JSON transformations.
-			out, err := res.MarshalJSON()
-			if err != nil {
-				return nil, err
-			}
-
-			data, err := d.SopsDecryptWithFormat(out, formats.Json, formats.Json)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decrypt and format '%s/%s' %s data: %w",
-					res.GetNamespace(), res.GetName(), res.GetKind(), err)
-			}
-
-			err = res.UnmarshalJSON(data)
-			if err != nil {
-				return nil, fmt.Errorf("failed to unmarshal decrypted '%s/%s' %s to JSON: %w",
-					res.GetNamespace(), res.GetName(), res.GetKind(), err)
-			}
-			return res, nil
-		case res.GetKind() == "Secret":
-			dataMap := res.GetDataMap()
-			for key, value := range dataMap {
-				data, err := base64.StdEncoding.DecodeString(value)
-				if err != nil {
-					// If we fail to base64 decode, it is (very) likely to be a
-					// user input error. Instead of failing here, let it bubble
-					// up during the actual build.
-					continue
-				}
-
-				if inF := detectFormatFromMarkerBytes(data); inF != unsupportedFormat {
-					outF := formatForPath(key)
-					out, err := d.SopsDecryptWithFormat(data, inF, outF)
-					if err != nil {
-						return nil, fmt.Errorf("failed to decrypt and format '%s/%s' Secret field '%s': %w",
-							res.GetNamespace(), res.GetName(), key, err)
-					}
-					dataMap[key] = base64.StdEncoding.EncodeToString(out)
-				}
-			}
-			res.SetDataMap(dataMap)
-			return res, nil
-		}
-	}
-	return nil, nil
-}
-
 // DecryptSources attempts to decrypt all types.SecretArgs FileSources and
 // EnvSources a Kustomization file in the directory at the provided path refers
 // to, before walking recursively over all other resources it refers to.
@@ -512,91 +438,20 @@ func (d *Decryptor) DecryptResource(res *resource.Resource) (*resource.Resource,
 // outside the working directory of the decryptor, but returns any decryption
 // error.
 func (d *Decryptor) DecryptSources(path string) error {
-	if d.kustomization.Spec.Decryption == nil || d.kustomization.Spec.Decryption.Provider != DecryptionProviderSOPS {
+	if d.cueExport.Spec.Decryption == nil || d.cueExport.Spec.Decryption.Provider != DecryptionProviderSOPS {
 		return nil
 	}
 
-	decrypted, visited := make(map[string]struct{}, 0), make(map[string]struct{}, 0)
-	visit := d.decryptKustomizationSources(decrypted)
-	return recurseKustomizationFiles(d.root, path, visit, visited)
-}
-
-// decryptKustomizationSources returns a visitKustomization implementation
-// which attempts to decrypt any EnvSources entry it finds in the Kustomization
-// file with which it is called.
-// After decrypting successfully, it adds the absolute path of the file to the
-// given map.
-func (d *Decryptor) decryptKustomizationSources(visited map[string]struct{}) visitKustomization {
-	return func(root, path string, kus *kustypes.Kustomization) error {
-		visitRef := func(sourcePath string, format formats.Format) error {
-			if !filepath.IsAbs(sourcePath) {
-				sourcePath = filepath.Join(path, sourcePath)
-			}
-			absRef, _, err := securePaths(root, sourcePath)
+	return filepath.WalkDir(path, func(path string, entry fs.DirEntry, err error) error {
+		format := formatForPath(path)
+		if !entry.IsDir() && entry.Type().IsRegular() {
+			err = d.sopsDecryptFile(path, format, format)
 			if err != nil {
-				return err
-			}
-			if _, ok := visited[absRef]; ok {
-				return nil
-			}
-			if err := d.sopsDecryptFile(absRef, format, format); err != nil {
-				return securePathErr(root, err)
-			}
-			// Explicitly set _after_ the decryption operation, this makes
-			// visited work as a list of actually decrypted files
-			visited[absRef] = struct{}{}
-			return nil
-		}
-
-		// Iterate over all SecretGenerator entries in the Kustomization file and attempt to decrypt their FileSources and EnvSources.
-		for _, gen := range kus.SecretGenerator {
-			for _, fileSrc := range gen.FileSources {
-				// Split the source path from any associated key, defaulting to the key if not specified.
-				parts := strings.SplitN(fileSrc, "=", 2)
-				key := parts[0]
-				var filePath string
-				if len(parts) > 1 {
-					filePath = parts[1]
-				} else {
-					filePath = key
-				}
-				// Visit the file reference and attempt to decrypt it.
-				if err := visitRef(filePath, formatForPath(key)); err != nil {
-					return err
-				}
-			}
-			for _, envFile := range gen.EnvSources {
-				// Determine the format for the environment file, defaulting to Dotenv if not specified.
-				format := formatForPath(envFile)
-				if format == formats.Binary {
-					// Default to dotenv
-					format = formats.Dotenv
-				}
-				// Visit the environment file reference and attempt to decrypt it.
-				if err := visitRef(envFile, format); err != nil {
-					return err
-				}
-			}
-		}
-		// Iterate over all patches in the Kustomization file and attempt to decrypt their paths if they are encrypted.
-		for _, patch := range kus.Patches {
-			if patch.Path == "" {
-				continue
-			}
-
-			if isRemoteURL(patch.Path) {
-				continue
-			}
-
-			// Determine the format for the patch, defaulting to YAML if not specified.
-			format := formatForPath(patch.Path)
-			// Visit the patch reference and attempt to decrypt it.
-			if err := visitRef(patch.Path, format); err != nil {
-				return err
+				return fmt.Errorf("failed to decrypt %s: %w", path, err)
 			}
 		}
 		return nil
-	}
+	})
 }
 
 // sopsDecryptFile attempts to decrypt the file at the given path using SOPS'
@@ -614,9 +469,6 @@ func (d *Decryptor) sopsDecryptFile(path string, inputFormat, outputFormat forma
 		return err
 	}
 
-	if !fi.Mode().IsRegular() {
-		return fmt.Errorf("cannot decrypt irregular file as it has file mode type bits set")
-	}
 	if fileSize := fi.Size(); d.maxFileSize > 0 && fileSize > d.maxFileSize {
 		return fmt.Errorf("cannot decrypt file with size (%d bytes) exceeding limit (%d)", fileSize, d.maxFileSize)
 	}
@@ -640,46 +492,6 @@ func (d *Decryptor) sopsDecryptFile(path string, inputFormat, outputFormat forma
 			sopsFormatToString[inputFormat], sopsFormatToString[outputFormat], err)
 	}
 	return nil
-}
-
-// sopsEncryptWithFormat attempts to load a plain file using the store
-// for the input format, gathers the data key for it from the key service,
-// and then encrypt the file data with the retrieved data key.
-// It returns the encrypted bytes in the provided output format, or an error.
-func (d *Decryptor) sopsEncryptWithFormat(metadata sops.Metadata, data []byte, inputFormat, outputFormat formats.Format) ([]byte, error) {
-	store := common.StoreForFormat(inputFormat, config.NewStoresConfig())
-
-	branches, err := store.LoadPlainFile(data)
-	if err != nil {
-		return nil, err
-	}
-
-	tree := sops.Tree{
-		Branches: branches,
-		Metadata: metadata,
-	}
-	dataKey, errs := tree.GenerateDataKeyWithKeyServices(d.keyServiceServer())
-	if len(errs) > 0 {
-		return nil, sopsUserErr("could not generate data key", fmt.Errorf("%s", errs))
-	}
-
-	cipher := aes.NewCipher()
-	unencryptedMac, err := tree.Encrypt(dataKey, cipher)
-	if err != nil {
-		return nil, sopsUserErr("error encrypting sops tree", err)
-	}
-	tree.Metadata.LastModified = time.Now().UTC()
-	tree.Metadata.MessageAuthenticationCode, err = cipher.Encrypt(unencryptedMac, dataKey, tree.Metadata.LastModified.Format(time.RFC3339))
-	if err != nil {
-		return nil, sopsUserErr("cannot encrypt sops data tree", err)
-	}
-
-	outStore := common.StoreForFormat(outputFormat, config.NewStoresConfig())
-	out, err := outStore.EmitEncryptedFile(tree)
-	if err != nil {
-		return nil, sopsUserErr("failed to emit sops encrypted file", err)
-	}
-	return out, nil
 }
 
 // keyServiceServer returns the SOPS (local) key service clients used to serve
@@ -708,217 +520,11 @@ func (d *Decryptor) loadKeyServiceServer() {
 	d.keyServices = append(make([]keyservice.KeyServiceClient, 0), keyservice.NewCustomLocalClient(server))
 }
 
-// secureLoadKustomizationFile tries to securely load a Kustomization file from
-// the given directory path.
-// If multiple Kustomization files are found, or the request is ambiguous, an
-// error is returned.
-func secureLoadKustomizationFile(root, path string) (*kustypes.Kustomization, error) {
-	if !filepath.IsAbs(root) {
-		return nil, fmt.Errorf("root '%s' must be absolute", root)
-	}
-	if filepath.IsAbs(path) {
-		return nil, fmt.Errorf("path '%s' must be relative", path)
-	}
-
-	var loadPath string
-	for _, fName := range konfig.RecognizedKustomizationFileNames() {
-		fPath, err := securejoin.SecureJoin(root, filepath.Join(path, fName))
-		if err != nil {
-			return nil, fmt.Errorf("failed to secure join %s: %w", fName, err)
-		}
-		fi, err := os.Lstat(fPath)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("failed to lstat %s: %w", fName, securePathErr(root, err))
-		}
-
-		if !fi.Mode().IsRegular() {
-			return nil, fmt.Errorf("expected %s to be a regular file", fName)
-		}
-		if loadPath != "" {
-			return nil, fmt.Errorf("found multiple kustomization files")
-		}
-		loadPath = fPath
-	}
-	if loadPath == "" {
-		return nil, fmt.Errorf("no kustomization file found")
-	}
-
-	data, err := os.ReadFile(loadPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read kustomization file: %w", securePathErr(root, err))
-	}
-
-	kus := kustypes.Kustomization{
-		TypeMeta: kustypes.TypeMeta{
-			APIVersion: kustypes.KustomizationVersion,
-			Kind:       kustypes.KustomizationKind,
-		},
-	}
-	if err := yaml.Unmarshal(data, &kus); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal kustomization file from '%s': %w", loadPath, err)
-	}
-	return &kus, nil
-}
-
-// visitKustomization is called by recurseKustomizationFiles after every
-// successful Kustomization file load.
-type visitKustomization func(root, path string, kus *kustypes.Kustomization) error
-
-// errRecurseIgnore is a wrapping error to signal to recurseKustomizationFiles
-// the error can be ignored during recursion. For example, because the
-// Kustomization file can not be loaded for a subsequent call.
-type errRecurseIgnore struct {
-	Err error
-}
-
-// Unwrap returns the actual underlying error.
-func (e *errRecurseIgnore) Unwrap() error {
-	return e.Err
-}
-
-// Error returns the error string of the underlying error.
-func (e *errRecurseIgnore) Error() string {
-	if err := e.Err; err != nil {
-		return e.Err.Error()
-	}
-	return "recurse ignore"
-}
-
-// recurseKustomizationFiles attempts to recursively load and visit
-// Kustomization files.
-// The provided path is allowed to be relative, in which case it is safely
-// joined with root. When absolute, it must be inside root.
-func recurseKustomizationFiles(root, path string, visit visitKustomization, visited map[string]struct{}) error {
-	// Resolve the secure paths
-	absPath, relPath, err := securePaths(root, path)
-	if err != nil {
-		return err
-	}
-
-	if _, ok := visited[absPath]; ok {
-		// Short-circuit
-		return nil
-	}
-	visited[absPath] = struct{}{}
-
-	// Confirm we are dealing with a directory
-	fi, err := os.Lstat(absPath)
-	if err != nil {
-		err = securePathErr(root, err)
-		if errors.Is(err, fs.ErrNotExist) {
-			err = &errRecurseIgnore{Err: err}
-		}
-		return err
-	}
-	if !fi.IsDir() {
-		return &errRecurseIgnore{Err: fmt.Errorf("not a directory")}
-	}
-
-	// Attempt to load the Kustomization file from the directory
-	kus, err := secureLoadKustomizationFile(root, relPath)
-	if err != nil {
-		return err
-	}
-
-	// Visit the Kustomization
-	if err = visit(root, path, kus); err != nil {
-		return err
-	}
-
-	// Components may contain resources as well, ...
-	// ...so we have to process both .resources and .components values
-	resources := append(kus.Resources, kus.Components...)
-
-	// Recurse over other resources in Kustomization,
-	// repeating the above logic per item
-	for _, res := range resources {
-		if !filepath.IsAbs(res) {
-			res = filepath.Join(path, res)
-		}
-		if err = recurseKustomizationFiles(root, res, visit, visited); err != nil {
-			// When the resource does not exist at the compiled path, it's
-			// either an invalid reference, or a URL.
-			// If the reference is valid but does not point to a directory,
-			// we have run into a dead end as well.
-			// In all other cases, the error is of (possible) importance to
-			// the user, and we should return it.
-			if _, ok := err.(*errRecurseIgnore); !ok {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func isRemoteURL(path string) bool {
-	u, err := url.Parse(path)
-	if err != nil {
-		return false
-	}
-
-	// A remote URL will have a scheme (like "http", "https", "ssh")
-	// AND a host (like "example.com").
-	return u.Scheme != "" && u.Host != ""
-}
-
-// isSOPSEncryptedResource detects if the given resource is a SOPS' encrypted
-// resource by looking for ".sops" and ".sops.mac" fields.
-func isSOPSEncryptedResource(res *resource.Resource) bool {
-	if res == nil {
-		return false
-	}
-	sopsField := res.Field("sops")
-	if sopsField.IsNilOrEmpty() {
-		return false
-	}
-	macField := sopsField.Value.Field("mac")
-	return !macField.IsNilOrEmpty()
-}
-
-// securePaths returns the absolute and relative paths for the provided path,
-// guaranteed to be scoped inside the provided root.
-// When the given path is absolute, the root is stripped before secure joining
-// it on root.
-func securePaths(root, path string) (string, string, error) {
-	if filepath.IsAbs(path) {
-		path = stripRoot(root, path)
-	}
-	secureAbsPath, err := securejoin.SecureJoin(root, path)
-	if err != nil {
-		return "", "", err
-	}
-	return secureAbsPath, stripRoot(root, secureAbsPath), nil
-}
-
-func stripRoot(root, path string) string {
-	sepStr := string(filepath.Separator)
-	root, path = filepath.Clean(sepStr+root), filepath.Clean(sepStr+path)
-	switch {
-	case path == root:
-		path = sepStr
-	case root == sepStr:
-		// noop
-	case strings.HasPrefix(path, root+sepStr):
-		path = strings.TrimPrefix(path, root+sepStr)
-	}
-	return filepath.Clean(filepath.Join("."+sepStr, path))
-}
-
 func sopsUserErr(msg string, err error) error {
 	if userErr, ok := err.(sops.UserError); ok {
 		err = errors.New(userErr.UserError())
 	}
 	return fmt.Errorf("%s: %w", msg, err)
-}
-
-func securePathErr(root string, err error) error {
-	if pathErr := new(fs.PathError); errors.As(err, &pathErr) {
-		err = &fs.PathError{Op: pathErr.Op, Path: stripRoot(root, pathErr.Path), Err: pathErr.Err}
-	}
-	return err
 }
 
 func formatForPath(path string) formats.Format {
@@ -928,15 +534,6 @@ func formatForPath(path string) formats.Format {
 	default:
 		return formats.FormatForPath(path)
 	}
-}
-
-func detectFormatFromMarkerBytes(b []byte) formats.Format {
-	for k, v := range sopsFormatToMarkerBytes {
-		if bytes.Contains(b, v) {
-			return k
-		}
-	}
-	return unsupportedFormat
 }
 
 // safeDecrypt redacts secret values in sops error messages.
