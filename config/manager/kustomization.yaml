@@ -1,8 +1,8 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - deployment.yaml
+- deployment.yaml
 images:
-  - name: fluxcd/kustomize-controller
-    newName: fluxcd/kustomize-controller
-    newTag: v1.8.0
+- name: fluxcd/kustomize-controller
+  newName: ghcr.io/addreas/cue-controller
+  newTag: v1.8.2

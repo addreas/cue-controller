@@ -3,5 +3,5 @@ repo: github.com/addreas/cue-controller
 resources:
 - group: cue
   kind: CueExport
-  version: v1beta2
+  version: v1
 version: "2"

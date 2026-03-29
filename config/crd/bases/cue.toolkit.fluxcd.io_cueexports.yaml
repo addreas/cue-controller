@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.16.3
   name: cueexports.cue.toolkit.fluxcd.io
 spec:
   group: cue.toolkit.fluxcd.io
@@ -26,7 +26,7 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].message
       name: Status
       type: string
-    name: v1beta2
+    name: v1
     schema:
       openAPIV3Schema:
         description: CueExport is the Schema for the cue controller API.
@@ -69,10 +69,43 @@ spec:
                     description: Labels to be added to the object's metadata.
                     type: object
                 type: object
+              decryption:
+                description: Decrypt Kubernetes secrets before applying them on the
+                  cluster.
+                properties:
+                  provider:
+                    description: Provider is the name of the decryption engine.
+                    enum:
+                    - sops
+                    type: string
+                  secretRef:
+                    description: |-
+                      The secret name containing the private OpenPGP keys used for decryption.
+                      A static credential for a cloud provider defined inside the Secret
+                      takes priority to secret-less authentication with the ServiceAccountName
+                      field.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  serviceAccountName:
+                    description: |-
+                      ServiceAccountName is the name of the service account used to
+                      authenticate with KMS services from cloud providers. If a
+                      static credential for a given cloud provider is defined
+                      inside the Secret referenced by SecretRef, that static
+                      credential takes priority.
+                    type: string
+                required:
+                - provider
+                type: object
               deletionPolicy:
                 description: |-
                   DeletionPolicy can be used to control garbage collection when this
-                  Kustomization is deleted. Valid values are ('MirrorPrune', 'Delete',
+                  CueExport is deleted. Valid values are ('MirrorPrune', 'Delete',
                   'WaitForTermination', 'Orphan'). 'MirrorPrune' mirrors the Prune field
                   (orphan if false, delete if true). Defaults to 'MirrorPrune'.
                 enum:
@@ -83,7 +116,7 @@ spec:
                 type: string
               dependsOn:
                 description: |-
-                  DependsOn may contain a meta.NamespacedObjectReference slice
+                  DependsOn may contain a DependencyReference slice
                   with references to CueExport resources that must be ready before this
                   CueExport can be reconciled.
                 items:
@@ -124,10 +157,10 @@ spec:
               gates:
                 description: |-
                   A list of CUE expressions that must be true for the CUE instance to be
-                  reconciled
+                  reconciled.
                 items:
                   description: GateExpr defines a CUE expression that must be true
-                    for the CUE instance to be reconciled
+                    for the CUE instance to be reconciled.
                   properties:
                     expr:
                       description: The CUE expression to evaluate.
@@ -326,13 +359,15 @@ spec:
                     - OCIRepository
                     - GitRepository
                     - Bucket
+                    - ExternalArtifact
                     type: string
                   name:
                     description: Name of the referent.
                     type: string
                   namespace:
-                    description: Namespace of the referent, defaults to the namespace
-                      of the Kubernetes resource object that contains the reference.
+                    description: |-
+                      Namespace of the referent, defaults to the namespace of the Kubernetes
+                      resource object that contains the reference.
                     type: string
                 required:
                 - kind
@@ -347,7 +382,7 @@ spec:
                 description: Tags that will be injected into the CUE instance.
                 items:
                   description: Tag is a tag variable with a required name and optional
-                    value
+                    value.
                   properties:
                     name:
                       type: string
@@ -538,8 +573,9 @@ spec:
                   type: object
                 type: array
               inventory:
-                description: Inventory contains the list of Kubernetes resource object
-                  references that have been successfully applied.
+                description: |-
+                  Inventory contains the list of Kubernetes resource object references that
+                  have been successfully applied.
                 properties:
                   entries:
                     description: Entries of Kubernetes resource object references.

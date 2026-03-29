@@ -6,12 +6,12 @@ require (
 	github.com/fluxcd/pkg/apis/kustomize v1.16.0
 	github.com/fluxcd/pkg/apis/meta v1.26.0
 	k8s.io/api v0.35.2
-	k8s.io/apiextensions-apiserver v0.35.2
 	k8s.io/apimachinery v0.35.2
 	sigs.k8s.io/controller-runtime v0.23.1
 )
 
 require (
+	k8s.io/apiextensions-apiserver v0.35.2 //indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -29,5 +29,4 @@ require (
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2-0.20260122202528-d9cc6641c482 // indirect
-	sigs.k8s.io/yaml v1.6.0 // indirect
 )

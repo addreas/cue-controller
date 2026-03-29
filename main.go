@@ -53,7 +53,7 @@ import (
 	ssautils "github.com/fluxcd/pkg/ssa/utils"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
-	cuev1 "github.com/addreas/cue-controller/api/v1beta2"
+	cuev1 "github.com/addreas/cue-controller/api/v1"
 	"github.com/addreas/cue-controller/internal/controller"
 	"github.com/addreas/cue-controller/internal/features"
 	// +kubebuilder:scaffold:imports

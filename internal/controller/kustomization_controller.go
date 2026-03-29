@@ -72,6 +72,7 @@ import (
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
 
 	cuev1 "github.com/addreas/cue-controller/api/v1"
+	"github.com/addreas/cue-controller/internal/decryptor"
 	"github.com/addreas/cue-controller/internal/inventory"
 )
 
@@ -195,6 +196,18 @@ func (r *CueReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result
 		obj.Status.ObservedGeneration = obj.Generation
 		r.event(obj, "", "", eventv1.EventSeverityError, errMsg, nil)
 		return ctrl.Result{}, reconcile.TerminalError(err)
+	}
+
+	// Check object-level workload identity feature gate and decryption with service account.
+	if d := obj.Spec.Decryption; d != nil && d.ServiceAccountName != "" && !auth.IsObjectLevelWorkloadIdentityEnabled() {
+		const gate = auth.FeatureGateObjectLevelWorkloadIdentity
+		const msgFmt = "to use spec.decryption.serviceAccountName for decryption authentication please enable the %s feature gate in the controller"
+		msg := fmt.Sprintf(msgFmt, gate)
+		conditions.MarkFalse(obj, meta.ReadyCondition, meta.FeatureGateDisabledReason, msgFmt, gate)
+		conditions.MarkStalled(obj, meta.FeatureGateDisabledReason, msgFmt, gate)
+		log.Error(auth.ErrObjectLevelWorkloadIdentityNotEnabled, msg)
+		r.event(obj, "", "", eventv1.EventSeverityError, msg, nil)
+		return ctrl.Result{}, nil
 	}
 
 	// Resolve the source reference and requeue the reconciliation if the source is not found.
@@ -417,7 +430,7 @@ func (r *CueReconciler) reconcile(
 		return fmt.Errorf("failed to build kube client: %w", err)
 	}
 
-	values, err := r.values(ctx, moduleRootPath, obj)
+	values, err := r.values(ctx, tmpDir, moduleRootPath, obj)
 	if err != nil {
 		conditions.MarkFalse(obj, meta.ReadyCondition, meta.BuildFailedReason, "%s", err)
 		return err
@@ -746,7 +759,36 @@ func (r *CueReconciler) getSource(ctx context.Context,
 	return src, nil
 }
 
-func (r *CueReconciler) values(ctx context.Context, root string, obj *cuev1.CueExport) ([]cue.Value, error) {
+func (r *CueReconciler) values(ctx context.Context, workDir string, dirPath string, obj *cuev1.CueExport) ([]cue.Value, error) {
+	// Build decryptor.
+	decryptorOpts := []decryptor.Option{
+		decryptor.WithRoot(workDir),
+	}
+	if r.TokenCache != nil {
+		decryptorOpts = append(decryptorOpts, decryptor.WithTokenCache(*r.TokenCache))
+	}
+	if name, ns := r.SOPSAgeSecret, os.Getenv(runtimeCtrl.EnvRuntimeNamespace); name != "" && ns != "" {
+		decryptorOpts = append(decryptorOpts, decryptor.WithSOPSAgeSecret(name, ns))
+	}
+	dec, cleanup, err := decryptor.New(r.Client, obj, decryptorOpts...)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	// Import keys and static credentials for decryption.
+	if err := dec.ImportKeys(ctx); err != nil {
+		return nil, err
+	}
+
+	// Set options for secret-less authentication with cloud providers for decryption.
+	dec.SetAuthOptions(ctx)
+
+	// Decrypt Kustomize EnvSources files before build
+	if err = dec.DecryptSources(dirPath); err != nil {
+		return nil, fmt.Errorf("error decrypting sources: %w", err)
+	}
+
 	cctx := cuecontext.New()
 
 	tags := make([]string, 0, len(obj.Spec.Tags))
@@ -765,8 +807,8 @@ func (r *CueReconciler) values(ctx context.Context, root string, obj *cuev1.CueE
 	}
 
 	cfg := &load.Config{
-		Dir:        root,
-		ModuleRoot: root,
+		Dir:        workDir,
+		ModuleRoot: dirPath,
 		Package:    obj.Spec.Package,
 		Tags:       tags,
 		TagVars:    load.DefaultTagVars(),
